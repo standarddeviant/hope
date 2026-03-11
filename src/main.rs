@@ -1,4 +1,7 @@
+use std::collections::HashMap;
+
 use bluest::AdvertisingDevice;
+use bluest::DeviceId;
 use eframe::egui;
 use egui::CentralPanel;
 use egui_inbox::UiInbox;
@@ -31,6 +34,7 @@ pub fn main() -> eframe::Result<()> {
     let inbox: UiInbox<ThreadedNusMsg> = UiInbox::new();
     let mut bt_state: ThreadedNusMsg = AmNotReady;
     let mut scan_vec: Vec<AdvertisingDevice> = vec![];
+    let mut scan_map: HashMap<DeviceId, AdvertisingDevice> = HashMap::default();
 
     let (cmd_tx, cmd_rx) = flume::unbounded();
     let resp_tx = inbox.sender();
@@ -56,8 +60,15 @@ pub fn main() -> eframe::Result<()> {
                         AmNotReady | AmScanning | AmConnecting | AmConnected | AmDone => {
                             bt_state = m;
                         }
-                        DataScanResult(new_scans) => {
-                            scan_vec.extend(new_scans);
+                        DataScanResult(recvd_scans) => {
+                            // scan_vec.extend(new_scans);
+                            for adv_dev in recvd_scans {
+                                let id = adv_dev.device.id();
+                                let unique = !scan_map.contains_key(&id);
+                                if unique {
+                                    scan_map.insert(id, adv_dev);
+                                }
+                            }
                         }
                         msg => {
                             println!("TODO: handle msg = {msg:?}");
@@ -66,7 +77,7 @@ pub fn main() -> eframe::Result<()> {
                 }
 
                 ui.label(format!("State: {:?}", bt_state));
-                ui.label(format!("Found {} devices", scan_vec.len()));
+                ui.label(format!("Found {} devices", scan_map.len()));
 
                 // scan start/stop
                 ui.horizontal(|ui| {
