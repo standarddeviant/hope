@@ -1,7 +1,13 @@
 // use std::thread;
 
-use bluest::AdvertisingDevice;
-// use flume::Receiver;
+use std::time::Duration;
+
+use bluest::{Adapter, AdvertisingDevice};
+use flume::Receiver;
+
+use futures_lite::StreamExt;
+
+// use flume::async::RecvStream;
 use tokio::runtime::Runtime;
 // use tracing::{error, info, warn};
 
@@ -30,7 +36,10 @@ pub enum ThreadedNusMsg {
     AmDone,
 }
 
-pub fn spawn_btnus_thread(resp: egui_inbox::UiInboxSender<Option<ThreadedNusMsg>>) {
+pub fn spawn_btnus_thread(
+    cmd: flume::Receiver<Option<ThreadedNusMsg>>,
+    resp: egui_inbox::UiInboxSender<Option<ThreadedNusMsg>>,
+) {
     std::thread::spawn(move || {
         let rt = Runtime::new().expect("Failed to create runtime");
         rt.block_on(async {
@@ -39,12 +48,53 @@ pub fn spawn_btnus_thread(resp: egui_inbox::UiInboxSender<Option<ThreadedNusMsg>
             // but unless you have a long running task that will send multiple messages
             // you can just ignore the error
 
-            let adapter = bluest::Adapter::default().await;
-            let msg = ThreadedNusMsg::AmReadyIdle(format!("{:?}", &adapter));
-            // Hello from another thread!".to_string()))
-            resp.send(Some(msg)).ok();
+            loop {
+                // TODO: put this in an async function that returns result and use ? operator???
+                let adapter = Adapter::default().await;
+                if adapter.is_none() {
+                    resp.send(Some(ThreadedNusMsg::AmNotReady)).ok();
+                    std::thread::sleep(Duration::from_millis(1000));
+                    continue;
+                }
+                let adapter = adapter.unwrap(); // simplify below code
+
+                let msg = ThreadedNusMsg::AmReadyIdle(format!("{:?}", &adapter));
+                // Hello from another thread!".to_string()))
+                resp.send(Some(msg)).ok();
+
+                println!("starting scan");
+                let mut scan = adapter.scan(&[]).await;
+                if scan.is_err() {
+                    resp.send(Some(ThreadedNusMsg::AmNotReady)).ok();
+                }
+                let mut scan = scan.unwrap();
+
+                // if scan.is
+                // match
+                println!("scan started");
+                while let Some(discovered_device) = scan.next().await {
+                    resp.send(Some(ThreadedNusMsg::DataScanResult(vec![
+                        discovered_device.clone(),
+                    ])))
+                    .ok();
+                    println!(
+                        "{}{}: {:?}",
+                        discovered_device
+                            .device
+                            .name()
+                            .as_deref()
+                            .unwrap_or("(unknown)"),
+                        discovered_device
+                            .rssi
+                            .map(|x| format!(" ({}dBm)", x))
+                            .unwrap_or_default(),
+                        discovered_device.adv_data.services
+                    );
+                }
+            }
 
             // TODO: use adapter...
+            // ada
         });
     });
 }
