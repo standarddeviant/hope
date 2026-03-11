@@ -3,12 +3,16 @@ use std::collections::HashMap;
 use bluest::AdvertisingDevice;
 use bluest::DeviceId;
 use eframe::egui;
-use egui::CentralPanel;
+use egui::{Align, CentralPanel, Layout};
+use egui_extras::Column;
 use egui_inbox::UiInbox;
+use egui_selectable_table::SelectableTable;
 
 use flume;
 
 mod btnus;
+mod scan_table;
+
 use btnus::ThreadedNusMsg::*;
 use btnus::spawn_btnus_thread;
 
@@ -17,6 +21,11 @@ use tracing_subscriber::filter;
 use tracing_subscriber::prelude::*;
 
 use crate::btnus::ThreadedNusMsg;
+use crate::scan_table::ScanColumns;
+use crate::scan_table::ScanRow;
+
+use strum::IntoEnumIterator;
+use strum_macros::{Display, EnumIter}; // 0.25
 
 pub fn main() -> eframe::Result<()> {
     // NOTE: logging/tracing config first
@@ -35,6 +44,15 @@ pub fn main() -> eframe::Result<()> {
     let mut bt_state: ThreadedNusMsg = AmNotReady;
     let mut scan_vec: Vec<AdvertisingDevice> = vec![];
     let mut scan_map: HashMap<DeviceId, AdvertisingDevice> = HashMap::default();
+
+    let scan_columns = ScanColumns::iter().collect();
+
+    // Auto reload after each 10k table row add or modification
+    let mut table = SelectableTable::new(scan_columns)
+        .auto_reload(10_000)
+        .auto_scroll()
+        .horizontal_scroll()
+        .no_ctrl_a_capture();
 
     let (cmd_tx, cmd_rx) = flume::unbounded();
     let resp_tx = inbox.sender();
@@ -66,7 +84,29 @@ pub fn main() -> eframe::Result<()> {
                                 let id = adv_dev.device.id();
                                 let unique = !scan_map.contains_key(&id);
                                 if unique {
-                                    scan_map.insert(id, adv_dev);
+                                    scan_map.insert(id, adv_dev.clone());
+                                    scan_vec.push(adv_dev);
+                                    for scan_obj in &scan_vec {
+                                        table.add_modify_row(|rows| {
+                                            // edit row here
+                                            for r in rows {
+                                                if r.1
+                                                    .row_data
+                                                    .id
+                                                    .eq(&format!("{}", scan_obj.device.id()))
+                                                {
+                                                    // copy the just-received thread_infos the correct table row correct
+                                                    // table row data
+                                                    r.1.row_data = scan_obj_to_scan_row(&scan_obj);
+                                                    return None; // indicate we modified a row, don't add a new one
+                                                }
+                                            }
+                                            let scan_row = scan_obj_to_scan_row(&scan_obj);
+                                            // indicate we didn't find a row to modify, so add this data as a new row
+                                            return Some(scan_row);
+                                        });
+                                    }
+                                    table.recreate_rows();
                                 }
                             }
                         }
@@ -97,7 +137,32 @@ pub fn main() -> eframe::Result<()> {
                         }
                     });
                 });
+
+                table.show_ui(ui, |table| {
+                    let mut table = table
+                        .drag_to_scroll(false)
+                        .striped(true)
+                        .resizable(true)
+                        .cell_layout(Layout::left_to_right(Align::Center))
+                        .drag_to_scroll(false)
+                        .auto_shrink([false; 2])
+                        .min_scrolled_height(0.0);
+
+                    for _col in ScanColumns::iter() {
+                        // table = table.column(Column::initial(150.0))
+                        table = table.column(Column::auto())
+                    }
+                    table
+                });
             });
         },
     )
+}
+
+fn scan_obj_to_scan_row(scan_obj: &AdvertisingDevice) -> ScanRow {
+    ScanRow {
+        id: format!("{}", scan_obj.device.id()),
+        name: scan_obj.device.name().unwrap_or("n/a".into()),
+        rssi: scan_obj.rssi.unwrap_or(-200_i16),
+    }
 }
