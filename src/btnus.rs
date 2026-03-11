@@ -1,43 +1,50 @@
 // use std::thread;
 
-// use bluest::AdvertisingDevice;
+use bluest::AdvertisingDevice;
 // use flume::Receiver;
 use tokio::runtime::Runtime;
 // use tracing::{error, info, warn};
 
 use egui_inbox::UiInboxSender;
 
-// #[derive(Debug, Clone, PartialEq)]
-// pub enum ThreadedNusMsg {
-//     // Commands
-//     // Ready,
-//     // StartConnect(Vec<u8>),
-//     DoScanStart(String), // FIXME: put scan params as a type in this event
-//     DoScanStop,
-//     DoConnect(AdvertisingDevice),
-//     DoDisconnect,
-//     DoQuit,
-//     //
-//     DataScanResult(Vec<AdvertisingDevice>),
-//     DataTx(Vec<u8>),
-//     DataRx(Vec<u8>),
-//     //
-//     AmReadyIdle,
-//     AmScanning,
-//     AmConnecting,
-//     AmConnected,
-// }
+#[derive(Debug, Clone, PartialEq)]
+pub enum ThreadedNusMsg {
+    // Commands
+    // Ready,
+    // StartConnect(Vec<u8>),
+    DoScanStart(String), // FIXME: put scan params as a type in this event
+    DoScanStop,
+    DoConnect(AdvertisingDevice),
+    DoDisconnect,
+    DoQuit,
+    //
+    DataScanResult(Vec<AdvertisingDevice>),
+    DataTx(Vec<u8>),
+    DataRx(Vec<u8>),
+    //
+    AmNotReady,
+    AmReadyIdle(String),
+    AmScanning,
+    AmConnecting,
+    AmConnected,
+    AmDone,
+}
 
-pub fn spawn_btnus_thread(resp: egui_inbox::UiInboxSender<Option<String>>) {
+pub fn spawn_btnus_thread(resp: egui_inbox::UiInboxSender<Option<ThreadedNusMsg>>) {
     std::thread::spawn(move || {
         let rt = Runtime::new().expect("Failed to create runtime");
         rt.block_on(async {
-            std::thread::sleep(std::time::Duration::from_secs(1));
+            // std::thread::sleep(std::time::Duration::from_secs(1));
             // Send will return an error if the receiver has been dropped
             // but unless you have a long running task that will send multiple messages
             // you can just ignore the error
-            resp.send(Some("Hello from another thread!".to_string()))
-                .ok();
+
+            let adapter = bluest::Adapter::default().await;
+            let msg = ThreadedNusMsg::AmReadyIdle(format!("{:?}", &adapter));
+            // Hello from another thread!".to_string()))
+            resp.send(Some(msg)).ok();
+
+            // TODO: use adapter...
         });
     });
 }
