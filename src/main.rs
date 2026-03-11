@@ -4,9 +4,13 @@ use egui_inbox::UiInbox;
 
 use tokio::runtime::Runtime;
 
+mod btnus;
+use btnus::spawn_btnus_thread;
+
 pub fn main() -> eframe::Result<()> {
     let inbox = UiInbox::new();
     let mut state = None;
+    let tx = inbox.sender();
 
     eframe::run_simple_native(
         "DnD Simple Example",
@@ -24,16 +28,7 @@ pub fn main() -> eframe::Result<()> {
                 if ui.button("Async Task").clicked() {
                     state = Some("Waiting for async task to complete".to_string());
                     let tx = inbox.sender();
-                    std::thread::spawn(move || {
-                        let rt = Runtime::new().expect("Failed to create runtime");
-                        rt.block_on(async {
-                            std::thread::sleep(std::time::Duration::from_secs(1));
-                            // Send will return an error if the receiver has been dropped
-                            // but unless you have a long running task that will send multiple messages
-                            // you can just ignore the error
-                            tx.send(Some("Hello from another thread!".to_string())).ok();
-                        });
-                    });
+                    spawn_btnus_thread(tx);
                 }
             });
         },
