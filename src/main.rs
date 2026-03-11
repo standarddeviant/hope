@@ -61,12 +61,16 @@ pub fn main() -> eframe::Result<()> {
                 // There also is a `replace` method that you can use as a shorthand for the above:
                 // inbox.replace(ui, &mut state);
 
-                ui.label(format!("State: {:?}", state));
-                if ui.button("Async Task").clicked() {
+                if ui.button("Send First Command...Async Task").clicked() {
                     // state = Some("Waiting for async task to complete".to_string());
                     // let tx = inbox.sender();
                     // spawn_btnus_thread(tx);
+
+                    let send_res = cmd_tx.send(Some(ThreadedNusMsg::AmReadyIdle("".into())));
+                    println!("send_res = {send_res:?}");
                 }
+
+                ui.label(format!("State: {:?}", state));
                 ui.label(format!("Found {} devices", scan_vec.len()));
                 ui.label(format!("Devices = {:?}", scan_vec));
             });

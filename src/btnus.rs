@@ -48,6 +48,10 @@ pub fn spawn_btnus_thread(
             // but unless you have a long running task that will send multiple messages
             // you can just ignore the error
 
+            println!("btnus waiting...");
+            let first_cmd = cmd.recv_async().await;
+            println!("btnus got {first_cmd:?} (yay!)");
+
             loop {
                 // TODO: put this in an async function that returns result and use ? operator???
                 let adapter = Adapter::default().await;
