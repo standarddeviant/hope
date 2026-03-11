@@ -20,6 +20,8 @@ use tracing::metadata::LevelFilter;
 use tracing_subscriber::filter;
 use tracing_subscriber::prelude::*;
 
+use tracing::{info, warn};
+
 use crate::btnus::ThreadedNusMsg;
 use crate::scan_table::ScanColumns;
 use crate::scan_table::ScanRow;
@@ -61,8 +63,8 @@ pub fn main() -> eframe::Result<()> {
     spawn_btnus_thread(cmd_rx, resp_tx);
 
     eframe::run_simple_native(
-        "DnD Simple Example",
-        Default::default(),
+        "NUS GUI",          //
+        Default::default(), //
         move |ctx, _frame| {
             CentralPanel::default().show(ctx, |ui| {
                 // `read` will return an iterator over all pending messages
@@ -77,6 +79,9 @@ pub fn main() -> eframe::Result<()> {
                         }
                         AmNotReady | AmScanning | AmConnecting | AmConnected | AmDone => {
                             bt_state = m;
+                        }
+                        DataTx(nus_tx_bytes) => {
+                            warn!("Unhandled NUS Tx Bytes = {nus_tx_bytes:?}");
                         }
                         DataScanResult(recvd_scans) => {
                             // scan_vec.extend(new_scans);
@@ -111,7 +116,7 @@ pub fn main() -> eframe::Result<()> {
                             }
                         }
                         msg => {
-                            println!("TODO: handle msg = {msg:?}");
+                            info!("TODO: handle msg = {msg:?}");
                         }
                     }
                 }
@@ -127,13 +132,13 @@ pub fn main() -> eframe::Result<()> {
                         if ui.button("Start Scan").clicked() {
                             // TODO: provide actual scan options into DoScanStart message from UI
                             let send_start_scan_res = cmd_tx.send(DoScanStart("".into()));
-                            println!("send_start_scan_res = {send_start_scan_res:?}");
+                            info!("send_start_scan_res = {send_start_scan_res:?}");
                         }
                     });
                     ui.add_enabled_ui(stop_enabled, |ui| {
                         if ui.button("Stop Scan").clicked() {
                             let send_stop_scan_res = cmd_tx.send(DoScanStop);
-                            println!("send_stop_scan_res = {send_stop_scan_res:?}");
+                            info!("send_stop_scan_res = {send_stop_scan_res:?}");
                         }
                     });
                 });

@@ -58,7 +58,7 @@ pub fn spawn_btnus_thread(
                 let _ = adapter.wait_available().await;
                 resp.send(AmReadyIdle(format!("{:?}", &adapter))).ok();
 
-                println!("btnus waiting for {:?}", DoScanStart("".into()));
+                info!("btnus waiting for {:?}", DoScanStart("".into()));
                 loop {
                     match cmd.recv_async().await {
                         Ok(DoScanStart(_opts)) => {
@@ -74,7 +74,7 @@ pub fn spawn_btnus_thread(
                     }
                 }
 
-                println!("starting scan");
+                info!("starting scan");
                 let mut scan = adapter.scan(&[]).await;
                 if scan.is_err() {
                     resp.send(AmNotReady).ok();
@@ -86,7 +86,7 @@ pub fn spawn_btnus_thread(
 
                 // if scan.is
                 // match
-                println!("scan started");
+                info!("scan started");
                 while let Some(discovered_device) = scan.next().await {
                     // TODO: put this timeout recv in a helper for readability
                     // TODO: check if the sync method recv_timeout works just fine in here... it
@@ -109,7 +109,7 @@ pub fn spawn_btnus_thread(
                     // Wrap the future with a timeout of 1 second
                     resp.send(DataScanResult(vec![discovered_device.clone()]))
                         .ok();
-                    println!(
+                    info!(
                         "{}{}: {:?}",
                         discovered_device
                             .device
@@ -123,7 +123,7 @@ pub fn spawn_btnus_thread(
                         discovered_device.adv_data.services
                     );
                 }
-                println!("scan stopped")
+                info!("scan stopped")
             } // outer forever loop
         });
     });
