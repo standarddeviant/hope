@@ -2,7 +2,9 @@
 
 // use std::time::Duration;
 
-use bluest::{Adapter, AdvertisingDevice};
+use std::collections::HashMap;
+
+use bluest::{Adapter, AdvertisingDevice, Device, DeviceId};
 use flume::Receiver;
 
 use futures_lite::StreamExt;
@@ -46,16 +48,23 @@ pub fn spawn_btnus_thread(
     std::thread::spawn(move || {
         let rt = Runtime::new().expect("Failed to create runtime");
         rt.block_on(async {
+            let mut scan_map: HashMap<DeviceId, Device> = HashMap::new();
+            let mut option_adapter = None;
             loop {
                 // TODO: put this in an async function that returns result and use ? operator???
-                let adapter = Adapter::default().await;
-                if adapter.is_none() {
+                option_adapter = Adapter::default().await;
+                if option_adapter.is_none() {
                     resp.send(AmNotReady).ok();
                     std::thread::sleep(Duration::from_millis(1000));
                     continue;
                 }
-                let adapter = adapter.unwrap(); // simplify below code
-                let _ = adapter.wait_available().await;
+                break;
+            }
+
+            let adapter = option_adapter.unwrap(); // simplify below code
+            let _ = adapter.wait_available().await;
+
+            loop {
                 resp.send(AmReadyIdle(format!("{:?}", &adapter))).ok();
 
                 info!("btnus waiting for {:?}", DoScanStart("".into()));
@@ -91,7 +100,7 @@ pub fn spawn_btnus_thread(
                     // TODO: put this timeout recv in a helper for readability
                     // TODO: check if the sync method recv_timeout works just fine in here... it
                     // should...
-                    match cmd.recv_timeout(Duration::from_millis(10)) {
+                    match cmd.recv_timeout(Duration::from_millis(0)) {
                         Ok(DoScanStop) => {
                             info!("scan: recv'd DoScanStop, stopping scan");
                             break;
@@ -106,22 +115,28 @@ pub fn spawn_btnus_thread(
                         }
                     }
 
-                    // Wrap the future with a timeout of 1 second
+                    let k = discovered_device.device.id();
+                    if scan_map.contains_key(&k) {
+                        continue;
+                    }
+                    let device = discovered_device.device.clone();
+                    scan_map.insert(k, device);
+
                     resp.send(DataScanResult(vec![discovered_device.clone()]))
                         .ok();
-                    info!(
-                        "{}{}: {:?}",
-                        discovered_device
-                            .device
-                            .name()
-                            .as_deref()
-                            .unwrap_or("(unknown)"),
-                        discovered_device
-                            .rssi
-                            .map(|x| format!(" ({}dBm)", x))
-                            .unwrap_or_default(),
-                        discovered_device.adv_data.services
-                    );
+                    // info!(
+                    //     "{}{}: {:?}",
+                    //     discovered_device
+                    //         .device
+                    //         .name()
+                    //         .as_deref()
+                    //         .unwrap_or("(unknown)"),
+                    //     discovered_device
+                    //         .rssi
+                    //         .map(|x| format!(" ({}dBm)", x))
+                    //         .unwrap_or_default(),
+                    //     discovered_device.adv_data.services
+                    // );
                 }
                 info!("scan stopped")
             } // outer forever loop

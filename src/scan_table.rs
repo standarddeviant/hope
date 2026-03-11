@@ -10,6 +10,7 @@ use egui::{Button, Ui};
 #[derive(Default, Clone, Copy)]
 pub struct Config {
     // counting_ongoing: bool,
+    pub connect_row_id: Option<i64>,
 }
 
 #[derive(Clone, Default)]
@@ -52,8 +53,8 @@ impl ColumnOperations<ScanRow, ScanColumns, Config> for ScanColumns {
 
         if let Some(sort) = sort_order {
             match sort {
-                SortOrder::Ascending => text += "🔽",
-                SortOrder::Descending => text += "🔼",
+                SortOrder::Descending => text += "🔽",
+                SortOrder::Ascending => text += "🔼",
             }
         }
         let selected = sort_order.is_some();
@@ -85,11 +86,11 @@ impl ColumnOperations<ScanRow, ScanColumns, Config> for ScanColumns {
         // expensive and gets shown to the UI immediately.
         // Continue to update the persistent row data to ensure once reload happens, the
         // previous count data is not lost
-        table.add_modify_row(|table| {
-            let target_row = table.get_mut(&row_id).unwrap();
-            // target_row.row_data.create_count += 1;
-            None
-        });
+        // table.add_modify_row(|table| {
+        //     let target_row = table.get_mut(&row_id).unwrap();
+        //     // target_row.row_data.create_count += 1;
+        //     None
+        // });
         // if !config.counting_ongoing {
         //     table.modify_shown_row(|t, index| {
         //         let target_index = index.get(&row_id).unwrap();
@@ -103,22 +104,25 @@ impl ColumnOperations<ScanRow, ScanColumns, Config> for ScanColumns {
         let resp = ui.add_sized(ui.available_size(), Button::selectable(cell_selected, text));
 
         resp.context_menu(|ui| {
-            if ui.button("Select All Rows").clicked() {
-                table.select_all();
-                ui.close();
+            if ui.button("Connect").clicked() {
+                table.config.connect_row_id = Some(row.id);
             }
-            if ui.button("Unselect All Rows").clicked() {
-                table.unselect_all();
-                ui.close();
-            }
-            if ui.button("Copy Selected Cells").clicked() {
-                table.copy_selected_cells(ui);
-                ui.close();
-            }
-            if ui.button("Mark row as selected").clicked() {
-                ui.close();
-                table.mark_row_as_selected(row_id, None);
-            }
+            // if ui.button("Select All Rows").clicked() {
+            //     table.select_all();
+            //     ui.close();
+            // }
+            // if ui.button("Unselect All Rows").clicked() {
+            //     table.unselect_all();
+            //     ui.close();
+            // }
+            // if ui.button("Copy Selected Cells").clicked() {
+            //     table.copy_selected_cells(ui);
+            //     ui.close();
+            // }
+            // if ui.button("Mark row as selected").clicked() {
+            //     ui.close();
+            //     table.mark_row_as_selected(row_id, None);
+            // }
         });
         resp
     }

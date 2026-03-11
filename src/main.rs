@@ -141,7 +141,17 @@ pub fn main() -> eframe::Result<()> {
                             info!("send_stop_scan_res = {send_stop_scan_res:?}");
                         }
                     });
+                    if ui.button("Clear Scan List").clicked() {
+                        scan_map.clear();
+                        scan_vec.clear();
+                        table.clear_all_rows();
+                        table.recreate_rows();
+                    }
                 });
+
+                if let Some(connect_row_id) = table.config.connect_row_id {
+                    ui.label(format!("Should connect to {connect_row_id}..."));
+                }
 
                 table.show_ui(ui, |table| {
                     let mut table = table
