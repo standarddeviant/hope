@@ -1,6 +1,6 @@
 // use std::thread;
 
-use std::time::Duration;
+// use std::time::Duration;
 
 use bluest::{Adapter, AdvertisingDevice};
 use flume::Receiver;
@@ -9,6 +9,8 @@ use futures_lite::StreamExt;
 
 // use flume::async::RecvStream;
 use tokio::runtime::Runtime;
+use tokio::time::{Duration, timeout};
+use tracing::{debug, error, info, trace, warn};
 // use tracing::{error, info, warn};
 
 use egui_inbox::UiInboxSender;
@@ -35,52 +37,78 @@ pub enum ThreadedNusMsg {
     AmConnected,
     AmDone,
 }
+use ThreadedNusMsg::*;
 
 pub fn spawn_btnus_thread(
-    cmd: flume::Receiver<Option<ThreadedNusMsg>>,
-    resp: egui_inbox::UiInboxSender<Option<ThreadedNusMsg>>,
+    cmd: flume::Receiver<ThreadedNusMsg>,
+    resp: egui_inbox::UiInboxSender<ThreadedNusMsg>,
 ) {
     std::thread::spawn(move || {
         let rt = Runtime::new().expect("Failed to create runtime");
         rt.block_on(async {
-            // std::thread::sleep(std::time::Duration::from_secs(1));
-            // Send will return an error if the receiver has been dropped
-            // but unless you have a long running task that will send multiple messages
-            // you can just ignore the error
-
-            println!("btnus waiting...");
-            let first_cmd = cmd.recv_async().await;
-            println!("btnus got {first_cmd:?} (yay!)");
-
             loop {
                 // TODO: put this in an async function that returns result and use ? operator???
                 let adapter = Adapter::default().await;
                 if adapter.is_none() {
-                    resp.send(Some(ThreadedNusMsg::AmNotReady)).ok();
+                    resp.send(AmNotReady).ok();
                     std::thread::sleep(Duration::from_millis(1000));
                     continue;
                 }
                 let adapter = adapter.unwrap(); // simplify below code
+                let _ = adapter.wait_available().await;
+                resp.send(AmReadyIdle(format!("{:?}", &adapter))).ok();
 
-                let msg = ThreadedNusMsg::AmReadyIdle(format!("{:?}", &adapter));
-                // Hello from another thread!".to_string()))
-                resp.send(Some(msg)).ok();
+                println!("btnus waiting for {:?}", DoScanStart("".into()));
+                loop {
+                    match cmd.recv_async().await {
+                        Ok(DoScanStart(_opts)) => {
+                            break;
+                        }
+                        // TODO: handle connect device
+                        Ok(unhandled) => {
+                            warn!("unhandled message waiting for DoScanStart(_) = {unhandled:?}");
+                        }
+                        Err(_bad) => {
+                            //
+                        }
+                    }
+                }
 
                 println!("starting scan");
                 let mut scan = adapter.scan(&[]).await;
                 if scan.is_err() {
-                    resp.send(Some(ThreadedNusMsg::AmNotReady)).ok();
+                    resp.send(AmNotReady).ok();
+                    std::thread::sleep(Duration::from_millis(1000));
+                    continue;
                 }
                 let mut scan = scan.unwrap();
+                resp.send(AmScanning).ok();
 
                 // if scan.is
                 // match
                 println!("scan started");
                 while let Some(discovered_device) = scan.next().await {
-                    resp.send(Some(ThreadedNusMsg::DataScanResult(vec![
-                        discovered_device.clone(),
-                    ])))
-                    .ok();
+                    // TODO: put this timeout recv in a helper for readability
+                    // TODO: check if the sync method recv_timeout works just fine in here... it
+                    // should...
+                    match cmd.recv_timeout(Duration::from_millis(10)) {
+                        Ok(DoScanStop) => {
+                            info!("scan: recv'd DoScanStop, stopping scan");
+                            break;
+                        }
+                        // TODO: handle connect
+                        Ok(unhandled) => {
+                            warn!("scan: unhandled = {unhandled:?}");
+                        }
+                        Err(to) => {
+                            trace!("timeout waiting for msg during scan: {to}");
+                            //
+                        }
+                    }
+
+                    // Wrap the future with a timeout of 1 second
+                    resp.send(DataScanResult(vec![discovered_device.clone()]))
+                        .ok();
                     println!(
                         "{}{}: {:?}",
                         discovered_device
@@ -95,61 +123,8 @@ pub fn spawn_btnus_thread(
                         discovered_device.adv_data.services
                     );
                 }
-            }
-
-            // TODO: use adapter...
-            // ada
+                println!("scan stopped")
+            } // outer forever loop
         });
     });
 }
-
-// pub fn spawn_bt_thread(
-//     // cmd_recv: Receiver<ThreadedNusMsg>,
-//     resp_send: egui_inbox::UiInboxSender<ThreadedNusMsg>,
-// ) -> JoinHandle<u32> {
-//     // TODO: move this out of new for clean
-//
-//     let handle = thread::spawn(move || {
-//         let mut rc: u32 = 0;
-//
-//         // get bt-adapter and embed it in Context
-//
-//         let rt = Runtime::new().expect("Failed to create runtime");
-//
-//         // 3. Block the *current* new thread to run the async task to completion
-//         rt.block_on(async {
-//             // my_async_task().await;
-//
-//             let ble_adapter = bluest::Adapter::default()
-//                 .await
-//                 .expect("Can't obtain BLE adapter");
-//
-//             loop {
-//                 match cmd_recv.recv() {
-//                     Ok(ThreadedNusMsg::AmReadyIdle) => {
-//                         break;
-//                         //
-//                     }
-//                     Ok(msg) => {
-//                         warn!("unexpected cmd while waiting for AmReadyIdle: {msg:?}");
-//                     }
-//                     Err(e) => {
-//                         error!("cmd_recv recv failed: {e:?}");
-//                         // break;
-//                     }
-//                 }
-//             }
-//
-//             info!("sending AmReadyIdle");
-//             match resp_send.send(ThreadedNusMsg::AmReadyIdle) {
-//                 Ok(_good) => info!("AmReadyIdle sent"),
-//                 Err(e) => error!("AmReadyIdle send failed: {e:?}"),
-//             }
-//
-//             // put loop here
-//         }); // end rt.block_on
-//         rc
-//     });
-//
-//     return handle;
-// }
