@@ -47,7 +47,7 @@ struct NusGui {
 impl NusGui {
     pub fn new(cc: &CreationContext) -> Self {
         cc.egui_ctx
-            .options_mut(|a| a.theme_preference = ThemePreference::Light);
+            .options_mut(|a| a.theme_preference = ThemePreference::System);
 
         // NOTE: async/thread comms
         let inbox: UiInbox<ThreadedNusMsg> = UiInbox::new();
