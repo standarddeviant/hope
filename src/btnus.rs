@@ -116,9 +116,6 @@ pub fn spawn_btnus_thread(
                     }
 
                     let k = discovered_device.device.id();
-                    if scan_map.contains_key(&k) {
-                        continue;
-                    }
                     let device = discovered_device.device.clone();
                     scan_map.insert(k, device);
 
