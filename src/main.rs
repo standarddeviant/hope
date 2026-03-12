@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use bluest::AdvertisingDevice;
 use bluest::DeviceId;
 use eframe::{App, CreationContext, Frame, egui};
-use egui::{Align, CentralPanel, Context, Layout, ThemePreference};
+use egui::{Align, CentralPanel, Context, Layout, ThemePreference, Ui};
 use egui_extras::Column;
 use egui_inbox::{UiInbox, UiInboxSender};
 use egui_selectable_table::SelectableTable;
@@ -81,138 +81,187 @@ impl NusGui {
             table,
         }
     }
+
+    fn process_inbox(&mut self, ui: &mut Ui) {
+        // loop through all received responses
+        for response in self.inbox.read(ui) {
+            let m = response.clone();
+            // let m = response;
+            match m {
+                AmReadyIdle(adapter_desc) => {
+                    self.bt_state = AmReadyIdle(adapter_desc.clone());
+                }
+                AmNotReady | AmScanning | AmConnecting | AmConnected | AmDone => {
+                    self.bt_state = m;
+                }
+                DataTx(nus_tx_bytes) => {
+                    warn!("Unhandled NUS Tx Bytes = {nus_tx_bytes:?}");
+                }
+                DataScanResult(recvd_scans) => {
+                    // scan_vec.extend(new_scans);
+                    for adv_dev in recvd_scans {
+                        let id = adv_dev.device.id();
+                        let unique = !self.scan_map.contains_key(&id);
+                        if unique {
+                            self.scan_map.insert(id, adv_dev.clone());
+                            self.scan_vec.push(adv_dev);
+                            for scan_obj in &self.scan_vec {
+                                self.table.add_modify_row(|rows| {
+                                    // edit row here
+                                    for r in rows {
+                                        if r.1.row_data.bt_id.eq(&Some(scan_obj.device.id())) {
+                                            // copy the just-received thread_infos the correct table row correct
+                                            // table row data
+                                            r.1.row_data = scan_obj_to_scan_row(&scan_obj);
+                                            return None; // indicate we modified a row, don't add a new one
+                                        }
+                                    }
+                                    let scan_row = scan_obj_to_scan_row(&scan_obj);
+                                    // indicate we didn't find a row to modify, so add this data as a new row
+                                    return Some(scan_row);
+                                });
+                            }
+                            self.table.recreate_rows();
+                        }
+                    }
+                }
+                unhandled => {
+                    warn!("unhandled msg = {unhandled:?}");
+                }
+            }
+        }
+    } // end process_inbox
+
+    fn draw_central_panel(&mut self, ui: &mut Ui) {
+        // make 'actionable copy' of bt_state so called functions can alter self.bt_state
+        // let bt_state = self.bt_state.clone();
+        match self.bt_state.clone() {
+            AmNotReady => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Waiting for BT hardware...");
+                });
+                ui.label("Is there BT hardware connected?");
+            }
+            AmReadyIdle(_adapter_name) => {
+                self.draw_central_panel_idle_scan(ui);
+            }
+            AmScanning => {
+                self.draw_central_panel_idle_scan(ui);
+            }
+            AmConnecting => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Waiting for BT connection...");
+                });
+            }
+            AmConnected => {
+                ui.label("TODO: implement UI to use connection!");
+            }
+            AmDone => todo!(),
+            unhandled => {
+                ui.label(format!(
+                    "Well, this is awkward, I didn't expect to be in a state of {:?}",
+                    unhandled
+                ));
+            }
+        }
+    }
+
+    fn draw_central_panel_idle_scan(&mut self, ui: &mut Ui) {
+        ui.label(format!("State: {:?}", self.bt_state));
+        ui.label(format!("Found {} devices", self.scan_map.len()));
+
+        // scan start/stop
+        ui.horizontal(|ui| {
+            let start_enabled = matches!(self.bt_state, AmReadyIdle(_));
+            let stop_enabled = matches!(self.bt_state, AmScanning);
+            ui.add_enabled_ui(start_enabled, |ui| {
+                if ui.button("Start Scan").clicked() {
+                    // TODO: provide actual scan options into DoScanStart message from UI
+                    let send_start_scan_res = self.cmd_tx.send(DoScanStart("".into()));
+                    info!("send_start_scan_res = {send_start_scan_res:?}");
+                }
+            });
+            ui.add_enabled_ui(stop_enabled, |ui| {
+                if ui.button("Stop Scan").clicked() {
+                    let send_stop_scan_res = self.cmd_tx.send(DoScanStop);
+                    info!("send_stop_scan_res = {send_stop_scan_res:?}");
+                }
+            });
+            if ui.button("Clear Scan List").clicked() {
+                self.scan_map.clear();
+                self.scan_vec.clear();
+                self.table.clear_all_rows();
+                self.table.recreate_rows();
+            }
+        });
+
+        let work_row_id = self.table.config.connect_row_id;
+        if let Some(connect_row_id) = work_row_id {
+            // latch variable out
+            self.table.config.connect_row_id = None;
+
+            let row_map = self.table.get_all_rows();
+            match row_map.get(&connect_row_id) {
+                Some(connect_row) => {
+                    let row_data = connect_row.row_data.clone();
+                    info!(
+                        "Should connect to name={}, rssi={}, bt_id={:?}", //
+                        row_data.name, row_data.rssi, row_data.bt_id
+                    );
+
+                    match row_data.bt_id {
+                        Some(bt_id) => {
+                            let _ = self.cmd_tx.send(DoConnect(bt_id));
+                            self.bt_state = AmConnecting;
+                        }
+                        None => {
+                            warn!("Couldn't get bt_id from select/connect row_data");
+                        }
+                    }
+                }
+                None => {
+                    warn!("Couldn't resolve row id {connect_row_id}");
+                }
+            }
+            return;
+        }
+
+        self.table.show_ui(ui, |table| {
+            let mut table = table
+                .drag_to_scroll(false)
+                .striped(true)
+                .resizable(true)
+                .cell_layout(Layout::left_to_right(Align::Center))
+                .auto_shrink([false; 2])
+                .min_scrolled_height(0.0);
+
+            for _col in ScanColumns::iter() {
+                // table = table.column(Column::initial(150.0))
+                table = table.column(Column::auto())
+            }
+            table
+        });
+    } // end draw_central_panel
 }
 
 impl App for NusGui {
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
         CentralPanel::default().show(ctx, |ui| {
-            // `read` will return an iterator over all pending messages
+            // WARN: this call to process_inbox has to be *somewhere* but...
+            // the current function calls in process_inbox require ui: &Ui, but ....
+            // only because ui: &Ui has a reference to the ctx: &Context
+            // TODO: use different function calls and move call of process_inbox to outside the
+            // CentralPanel clause in this function; it would be cleaner at the root of this update
+            // function
 
-            // loop through all received responses
-            for response in self.inbox.read(ui) {
-                let m = response.clone();
-                // let m = response;
-                match m {
-                    AmReadyIdle(adapter_desc) => {
-                        self.bt_state = AmReadyIdle(adapter_desc.clone());
-                    }
-                    AmNotReady | AmScanning | AmConnecting | AmConnected | AmDone => {
-                        self.bt_state = m;
-                    }
-                    DataTx(nus_tx_bytes) => {
-                        warn!("Unhandled NUS Tx Bytes = {nus_tx_bytes:?}");
-                    }
-                    DataScanResult(recvd_scans) => {
-                        // scan_vec.extend(new_scans);
-                        for adv_dev in recvd_scans {
-                            let id = adv_dev.device.id();
-                            let unique = !self.scan_map.contains_key(&id);
-                            if unique {
-                                self.scan_map.insert(id, adv_dev.clone());
-                                self.scan_vec.push(adv_dev);
-                                for scan_obj in &self.scan_vec {
-                                    self.table.add_modify_row(|rows| {
-                                        // edit row here
-                                        for r in rows {
-                                            if r.1.row_data.bt_id.eq(&Some(scan_obj.device.id())) {
-                                                // copy the just-received thread_infos the correct table row correct
-                                                // table row data
-                                                r.1.row_data = scan_obj_to_scan_row(&scan_obj);
-                                                return None; // indicate we modified a row, don't add a new one
-                                            }
-                                        }
-                                        let scan_row = scan_obj_to_scan_row(&scan_obj);
-                                        // indicate we didn't find a row to modify, so add this data as a new row
-                                        return Some(scan_row);
-                                    });
-                                }
-                                self.table.recreate_rows();
-                            }
-                        }
-                    }
-                    msg => {
-                        info!("TODO: handle msg = {msg:?}");
-                    }
-                }
-            }
+            // NOTE: update data from received messages in inbox
+            self.process_inbox(ui);
 
-            ui.label(format!("State: {:?}", self.bt_state));
-            ui.label(format!("Found {} devices", self.scan_map.len()));
-
-            // scan start/stop
-            ui.horizontal(|ui| {
-                let start_enabled = matches!(self.bt_state, AmReadyIdle(_));
-                let stop_enabled = matches!(self.bt_state, AmScanning);
-                ui.add_enabled_ui(start_enabled, |ui| {
-                    if ui.button("Start Scan").clicked() {
-                        // TODO: provide actual scan options into DoScanStart message from UI
-                        let send_start_scan_res = self.cmd_tx.send(DoScanStart("".into()));
-                        info!("send_start_scan_res = {send_start_scan_res:?}");
-                    }
-                });
-                ui.add_enabled_ui(stop_enabled, |ui| {
-                    if ui.button("Stop Scan").clicked() {
-                        let send_stop_scan_res = self.cmd_tx.send(DoScanStop);
-                        info!("send_stop_scan_res = {send_stop_scan_res:?}");
-                    }
-                });
-                if ui.button("Clear Scan List").clicked() {
-                    self.scan_map.clear();
-                    self.scan_vec.clear();
-                    self.table.clear_all_rows();
-                    self.table.recreate_rows();
-                }
-            });
-
-            let work_row_id = self.table.config.connect_row_id;
-            if let Some(connect_row_id) = work_row_id {
-                // latch variable out
-                self.table.config.connect_row_id = None;
-
-                let row_map = self.table.get_all_rows();
-                match row_map.get(&connect_row_id) {
-                    Some(connect_row) => {
-                        let row_data = connect_row.row_data.clone();
-                        info!(
-                            "Should connect to name={}, rssi={}, bt_id={:?}", //
-                            row_data.name, row_data.rssi, row_data.bt_id
-                        );
-
-                        match row_data.bt_id {
-                            Some(bt_id) => {
-                                let _ = self.cmd_tx.send(DoConnect(bt_id));
-                                self.bt_state = AmConnecting;
-                            }
-                            None => {
-                                warn!("Couldn't get bt_id from select/connect row_data");
-                            }
-                        }
-                    }
-                    None => {
-                        warn!("Couldn't resolve row id {connect_row_id}");
-                    }
-                }
-                return;
-            }
-
-            self.table.show_ui(ui, |table| {
-                let mut table = table
-                    .drag_to_scroll(false)
-                    .striped(true)
-                    .resizable(true)
-                    .cell_layout(Layout::left_to_right(Align::Center))
-                    .drag_to_scroll(false)
-                    .auto_shrink([false; 2])
-                    .min_scrolled_height(0.0);
-
-                for _col in ScanColumns::iter() {
-                    // table = table.column(Column::initial(150.0))
-                    table = table.column(Column::auto())
-                }
-                table
-            });
+            // draw central panel
+            self.draw_central_panel(ui);
         });
-        //
     }
 }
 

@@ -3,6 +3,7 @@
 // use std::time::Duration;
 
 use std::collections::HashMap;
+use std::error::Error;
 
 use bluest::{Adapter, AdvertisingDevice, Device, DeviceId};
 use flume::Receiver;
@@ -16,6 +17,11 @@ use tracing::{debug, error, info, trace, warn};
 // use tracing::{error, info, warn};
 
 use egui_inbox::UiInboxSender;
+use uuid::Uuid;
+
+const NUS_SVC_UUID: Uuid = Uuid::from_u128(0x6E400001_B5A3_F393_E0A9_E50E24DCCA9E);
+const NUS_RX_CHR_UUID: Uuid = Uuid::from_u128(0x6E400002_B5A3_F393_E0A9_E50E24DCCA9E);
+const NUS_TX_CHR_UUID: Uuid = Uuid::from_u128(0x6E400003_B5A3_F393_E0A9_E50E24DCCA9E);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ThreadedNusMsg {
@@ -41,6 +47,102 @@ pub enum ThreadedNusMsg {
 }
 use ThreadedNusMsg::*;
 
+async fn bt_nus_setup_and_loop(
+    adapter: &bluest::Adapter,
+    bt_id: &DeviceId,
+    cmd: &flume::Receiver<ThreadedNusMsg>,
+    resp: &egui_inbox::UiInboxSender<ThreadedNusMsg>,
+) -> Result<(), Box<dyn Error>> {
+    // make device connection
+    let mut device = adapter.open_device(&bt_id).await?;
+    adapter.connect_device(&device).await?;
+
+    // use device to obtain service
+    let nus_svc = device.discover_services_with_uuid(NUS_SVC_UUID).await?;
+    let nus_svc = &nus_svc[0];
+
+    // use service to obtain (RX) characteristic
+    let nus_rx_chr = nus_svc
+        .discover_characteristics_with_uuid(NUS_RX_CHR_UUID)
+        .await?;
+    let nus_rx_chr = &nus_rx_chr[0];
+
+    // use service to obtain (TX) characteristic
+    let nus_tx_chr = nus_svc
+        .discover_characteristics_with_uuid(NUS_TX_CHR_UUID)
+        .await?;
+    let nus_tx_chr = &nus_tx_chr[0];
+
+    // enable notifs on TX characteristic
+    let mut nus_tx_notifs = nus_tx_chr.notify().await?;
+
+    while device.is_connected().await {
+        // TODO: do the tokio thing where you instruct...
+        // "async wait on either of these things, and action whichever comes first"
+
+        // 1. check input if we should Disconnect -OR- relay bytes to device via nus_rx_chr
+        loop {
+            match cmd.recv_timeout(Duration::from_millis(0)) {
+                Ok(DoDisconnect) => {
+                    info!("recv'd DoDisconnect");
+                    let _ = adapter.disconnect_device(&device).await;
+                    break;
+                }
+                Ok(DataRx(rx_bytes)) => {
+                    info!("recv'd DoDisconnect");
+                    match nus_rx_chr.write_without_response(&rx_bytes).await {
+                        Ok(_good) => {}
+                        Err(e) => {
+                            error!("{e}");
+                        }
+                    }
+                }
+                Ok(unh) => {
+                    warn!("unhandled msg = {unh:?}");
+                }
+                Err(_) => todo!(),
+            }
+        }
+
+        // 2. check notifs via nus_tx_chr
+        match timeout(Duration::from_millis(10), nus_tx_notifs.next()).await {
+            Ok(Some(Ok(tx_bytes))) => {
+                let _ = resp.send(DataTx(tx_bytes));
+            }
+            Ok(Some(Err(e))) => {
+                warn!("Unexpected... error = {e}");
+            }
+            Ok(None) => {
+                warn!("Unexpected... no tx bytes?");
+            }
+            Err(e) => {
+                debug!("elapsed...");
+            }
+        }
+    }
+
+    //     Ok(device) => match adapter.connect_device(&device).await {
+    //     Ok(device) => match adapter.connect_device(&device).await {
+    //         Ok(_good) => {
+    //             // find chars...
+    //             // info!("enabling NUS-TX notifications");
+    //             // let mut nus_tx= button_characteristic.notify().await?;
+    //             // enable notifs...
+    //         }
+    //         Err(e) => {
+    //             // error!("{e}");
+    //             // error!("Couldn't connect device = {device}");
+    //         }
+    //     },
+    //     Err(e) => {
+    //         // error!("{e}");
+    //         // error!("Couldn't make device from device_id = {bt_id}");
+    //     }
+    // }
+    //
+    Ok(())
+}
+
 pub fn spawn_btnus_thread(
     cmd: flume::Receiver<ThreadedNusMsg>,
     resp: egui_inbox::UiInboxSender<ThreadedNusMsg>,
@@ -48,6 +150,7 @@ pub fn spawn_btnus_thread(
     std::thread::spawn(move || {
         let rt = Runtime::new().expect("Failed to create runtime");
         rt.block_on(async {
+            let mut connect_bt_id: Option<DeviceId> = None;
             let mut scan_map: HashMap<DeviceId, Device> = HashMap::new();
             let mut option_adapter = None;
             loop {
@@ -66,16 +169,22 @@ pub fn spawn_btnus_thread(
 
             loop {
                 resp.send(AmReadyIdle(format!("{:?}", &adapter))).ok();
+                connect_bt_id = None;
 
                 info!("btnus waiting for {:?}", DoScanStart("".into()));
                 loop {
                     match cmd.recv_async().await {
                         Ok(DoScanStart(_opts)) => {
+                            connect_bt_id = None;
+                            break;
+                        }
+                        Ok(DoConnect(bt_id)) => {
+                            connect_bt_id = Some(bt_id);
                             break;
                         }
                         // TODO: handle connect device
-                        Ok(unhandled) => {
-                            warn!("unhandled message waiting for DoScanStart(_) = {unhandled:?}");
+                        Ok(unh) => {
+                            warn!("unhandled message waiting for DoScanStart(_) = {unh:?}");
                         }
                         Err(_bad) => {
                             //
@@ -83,59 +192,70 @@ pub fn spawn_btnus_thread(
                     }
                 }
 
-                info!("starting scan");
-                let mut scan = adapter.scan(&[]).await;
-                if scan.is_err() {
-                    resp.send(AmNotReady).ok();
-                    std::thread::sleep(Duration::from_millis(1000));
-                    continue;
-                }
-                let mut scan = scan.unwrap();
-                resp.send(AmScanning).ok();
+                // NOTE: putting scan in its own scope has the effect...
+                //       when the the scan stream is dropped
+                //       the BT scan operations will stop
+                // TODO: put this scan behavior in its own async fn
+                //       this async fn could return a device_id if given a &mut (mutable reference) to cmd_recv
 
-                // if scan.is
-                // match
-                info!("scan started");
-                while let Some(discovered_device) = scan.next().await {
-                    // TODO: put this timeout recv in a helper for readability
-                    // TODO: check if the sync method recv_timeout works just fine in here... it
-                    // should...
-                    match cmd.recv_timeout(Duration::from_millis(0)) {
-                        Ok(DoScanStop) => {
-                            info!("scan: recv'd DoScanStop, stopping scan");
-                            break;
-                        }
-                        // TODO: handle connect
-                        Ok(unhandled) => {
-                            warn!("scan: unhandled = {unhandled:?}");
-                        }
-                        Err(to) => {
-                            trace!("timeout waiting for msg during scan: {to}");
-                            //
-                        }
+                // if connect_bt_id is None, then let's scan!
+                if connect_bt_id.is_none() {
+                    info!("starting scan");
+                    let mut scan = adapter.scan(&[]).await;
+                    if scan.is_err() {
+                        resp.send(AmNotReady).ok();
+                        std::thread::sleep(Duration::from_millis(1000));
+                        continue;
                     }
+                    let mut scan = scan.unwrap();
+                    resp.send(AmScanning).ok();
 
-                    let k = discovered_device.device.id();
-                    let device = discovered_device.device.clone();
-                    scan_map.insert(k, device);
+                    // if scan.is
+                    // match
+                    info!("scan started");
+                    while let Some(discovered_device) = scan.next().await {
+                        // TODO: put this timeout recv in a helper for readability
+                        // TODO: check if the sync method recv_timeout works just fine in here... it
+                        // should...
+                        match cmd.recv_timeout(Duration::from_millis(0)) {
+                            Ok(DoScanStop) => {
+                                info!("scan: recv'd DoScanStop, stopping scan");
+                                break;
+                            }
+                            // TODO: handle connect
+                            Ok(DoConnect(device_id)) => {
+                                info!("scan: recv'd DoScanStop, stopping scan");
+                                connect_bt_id = Some(device_id)
+                            }
+                            Ok(unhandled) => {
+                                warn!("scan: unhandled = {unhandled:?}");
+                            }
+                            Err(to) => {
+                                trace!("timeout waiting for msg during scan: {to}");
+                                //
+                            }
+                        }
 
-                    resp.send(DataScanResult(vec![discovered_device.clone()]))
-                        .ok();
-                    // info!(
-                    //     "{}{}: {:?}",
-                    //     discovered_device
-                    //         .device
-                    //         .name()
-                    //         .as_deref()
-                    //         .unwrap_or("(unknown)"),
-                    //     discovered_device
-                    //         .rssi
-                    //         .map(|x| format!(" ({}dBm)", x))
-                    //         .unwrap_or_default(),
-                    //     discovered_device.adv_data.services
-                    // );
+                        let k = discovered_device.device.id();
+                        let device = discovered_device.device.clone();
+                        scan_map.insert(k, device);
+
+                        resp.send(DataScanResult(vec![discovered_device.clone()]))
+                            .ok();
+                    }
+                    info!("scan stopped")
+                } // end start-scan, i.e. if connect_bt_id.is_none()
+
+                match connect_bt_id {
+                    Some(bt_id) => {
+                        let result = bt_nus_setup_and_loop(&adapter, &bt_id, &cmd, &resp).await;
+                    }
+                    None => {
+                        continue;
+                    }
                 }
-                info!("scan stopped")
+
+                // let nus_setup_loop_result = bt_nus_setup_and_loop(, &mut cmd, egui_inbox)
             } // outer forever loop
         });
     });
