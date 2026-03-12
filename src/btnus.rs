@@ -24,7 +24,7 @@ pub enum ThreadedNusMsg {
     // StartConnect(Vec<u8>),
     DoScanStart(String), // FIXME: put scan params as a type in this event
     DoScanStop,
-    DoConnect(AdvertisingDevice),
+    DoConnect(DeviceId),
     DoDisconnect,
     DoQuit,
     //

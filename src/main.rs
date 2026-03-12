@@ -2,10 +2,10 @@ use std::collections::HashMap;
 
 use bluest::AdvertisingDevice;
 use bluest::DeviceId;
-use eframe::egui;
-use egui::{Align, CentralPanel, Layout};
+use eframe::{App, Frame, egui};
+use egui::{Align, CentralPanel, Context, Layout};
 use egui_extras::Column;
-use egui_inbox::UiInbox;
+use egui_inbox::{UiInbox, UiInboxSender};
 use egui_selectable_table::SelectableTable;
 
 use flume;
@@ -23,11 +23,32 @@ use tracing_subscriber::prelude::*;
 use tracing::{info, warn};
 
 use crate::btnus::ThreadedNusMsg;
-use crate::scan_table::ScanColumns;
-use crate::scan_table::ScanRow;
+use crate::scan_table::{ScanColumns, ScanConfig, ScanRow};
 
 use strum::IntoEnumIterator;
 use strum_macros::{Display, EnumIter}; // 0.25
+//
+use flume::Sender;
+
+struct NusGui {
+    // NOTE: async/thread comms
+    cmd_tx: Sender<ThreadedNusMsg>,
+    inbox: UiInbox<ThreadedNusMsg>, // = UiInbox::new();
+    // resp_tx: UiInboxSender<ThreadedNusMsg>,
+    bt_state: ThreadedNusMsg,                       // = AmNotReady;
+    scan_vec: Vec<AdvertisingDevice>,               // = vec![];
+    scan_map: HashMap<DeviceId, AdvertisingDevice>, // = HashMap::default();
+    scan_columns: ScanColumns,                      //::iter().collect();
+
+    // Auto reload after each 10k table row add or modification
+    table: SelectableTable<ScanRow, ScanColumns, ScanConfig>,
+}
+
+impl App for NusGui {
+    fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
+        //
+    }
+}
 
 pub fn main() -> eframe::Result<()> {
     // NOTE: logging/tracing config first
@@ -54,6 +75,7 @@ pub fn main() -> eframe::Result<()> {
         .auto_reload(10_000)
         .auto_scroll()
         .horizontal_scroll()
+        .select_full_row()
         .no_ctrl_a_capture();
 
     let (cmd_tx, cmd_rx) = flume::unbounded();
@@ -97,8 +119,8 @@ pub fn main() -> eframe::Result<()> {
                                             for r in rows {
                                                 if r.1
                                                     .row_data
-                                                    .id
-                                                    .eq(&format!("{}", scan_obj.device.id()))
+                                                    .bt_id
+                                                    .eq(&Some(scan_obj.device.id()))
                                                 {
                                                     // copy the just-received thread_infos the correct table row correct
                                                     // table row data
@@ -149,8 +171,35 @@ pub fn main() -> eframe::Result<()> {
                     }
                 });
 
-                if let Some(connect_row_id) = table.config.connect_row_id {
-                    ui.label(format!("Should connect to {connect_row_id}..."));
+                let work_row_id = table.config.connect_row_id;
+                if let Some(connect_row_id) = work_row_id {
+                    // latch variable out
+                    table.config.connect_row_id = None;
+
+                    let row_map = table.get_all_rows();
+                    match row_map.get(&connect_row_id) {
+                        Some(connect_row) => {
+                            let row_data = connect_row.row_data.clone();
+                            info!(
+                                "Should connect to name={}, rssi={}, bt_id={:?}", //
+                                row_data.name, row_data.rssi, row_data.bt_id
+                            );
+
+                            match row_data.bt_id {
+                                Some(bt_id) => {
+                                    let _ = cmd_tx.send(DoConnect(bt_id));
+                                    bt_state = AmConnecting;
+                                }
+                                None => {
+                                    warn!("Couldn't get bt_id from select/connect row_data");
+                                }
+                            }
+                        }
+                        None => {
+                            warn!("Couldn't resolve row id {connect_row_id}");
+                        }
+                    }
+                    return;
                 }
 
                 table.show_ui(ui, |table| {
@@ -176,7 +225,7 @@ pub fn main() -> eframe::Result<()> {
 
 fn scan_obj_to_scan_row(scan_obj: &AdvertisingDevice) -> ScanRow {
     ScanRow {
-        id: format!("{}", scan_obj.device.id()),
+        bt_id: Some(scan_obj.device.id()),
         name: scan_obj.device.name().unwrap_or("n/a".into()),
         rssi: scan_obj.rssi.unwrap_or(-200_i16),
     }
