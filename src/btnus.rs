@@ -76,7 +76,15 @@ async fn bt_nus_setup_and_loop(
     // enable notifs on TX characteristic
     let mut nus_tx_notifs = nus_tx_chr.notify().await?;
 
-    while device.is_connected().await {
+    info!("nus chars are ready!");
+    let _ = resp.send(AmConnected);
+
+    let mut do_disconnect = false;
+    loop {
+        if do_disconnect {
+            break;
+        }
+
         // TODO: do the tokio thing where you instruct...
         // "async wait on either of these things, and action whichever comes first"
 
@@ -85,13 +93,15 @@ async fn bt_nus_setup_and_loop(
             match cmd.recv_timeout(Duration::from_millis(0)) {
                 Ok(DoDisconnect) => {
                     info!("recv'd DoDisconnect");
-                    let _ = adapter.disconnect_device(&device).await;
+                    do_disconnect = true;
                     break;
                 }
                 Ok(DataRx(rx_bytes)) => {
-                    info!("recv'd DoDisconnect");
+                    info!("sending rx_bytes = {:?}", rx_bytes);
                     match nus_rx_chr.write_without_response(&rx_bytes).await {
-                        Ok(_good) => {}
+                        Ok(_good) => {
+                            info!("Sent bytes {rx_bytes:?}");
+                        }
                         Err(e) => {
                             error!("{e}");
                         }
@@ -100,13 +110,16 @@ async fn bt_nus_setup_and_loop(
                 Ok(unh) => {
                     warn!("unhandled msg = {unh:?}");
                 }
-                Err(_) => todo!(),
+                Err(rto) => {
+                    debug!("RecvTimeoutErr = {rto}");
+                }
             }
         }
 
         // 2. check notifs via nus_tx_chr
         match timeout(Duration::from_millis(10), nus_tx_notifs.next()).await {
             Ok(Some(Ok(tx_bytes))) => {
+                info!("Recv bytes {:?}", &tx_bytes);
                 let _ = resp.send(DataTx(tx_bytes));
             }
             Ok(Some(Err(e))) => {
@@ -116,30 +129,20 @@ async fn bt_nus_setup_and_loop(
                 warn!("Unexpected... no tx bytes?");
             }
             Err(e) => {
-                debug!("elapsed...");
+                debug!("elapsed {e}");
             }
         }
     }
 
-    //     Ok(device) => match adapter.connect_device(&device).await {
-    //     Ok(device) => match adapter.connect_device(&device).await {
-    //         Ok(_good) => {
-    //             // find chars...
-    //             // info!("enabling NUS-TX notifications");
-    //             // let mut nus_tx= button_characteristic.notify().await?;
-    //             // enable notifs...
-    //         }
-    //         Err(e) => {
-    //             // error!("{e}");
-    //             // error!("Couldn't connect device = {device}");
-    //         }
-    //     },
-    //     Err(e) => {
-    //         // error!("{e}");
-    //         // error!("Couldn't make device from device_id = {bt_id}");
-    //     }
-    // }
-    //
+    match adapter.disconnect_device(&device).await {
+        Ok(_good) => {
+            info!("ok disconnect");
+        }
+        Err(e) => {
+            error!("err disconnect {e}");
+        }
+    }
+
     Ok(())
 }
 
@@ -150,24 +153,25 @@ pub fn spawn_btnus_thread(
     std::thread::spawn(move || {
         let rt = Runtime::new().expect("Failed to create runtime");
         rt.block_on(async {
-            let mut connect_bt_id: Option<DeviceId> = None;
-            let mut scan_map: HashMap<DeviceId, Device> = HashMap::new();
-            let mut option_adapter = None;
             loop {
-                // TODO: put this in an async function that returns result and use ? operator???
-                option_adapter = Adapter::default().await;
-                if option_adapter.is_none() {
-                    resp.send(AmNotReady).ok();
-                    std::thread::sleep(Duration::from_millis(1000));
-                    continue;
+                let mut connect_bt_id: Option<DeviceId> = None;
+                let mut scan_map: HashMap<DeviceId, Device> = HashMap::new();
+                let mut option_adapter = None;
+                loop {
+                    // TODO: put this in an async function that returns result and use ? operator???
+                    option_adapter = Adapter::default().await;
+                    if option_adapter.is_none() {
+                        resp.send(AmNotReady).ok();
+                        std::thread::sleep(Duration::from_millis(1000));
+                        continue;
+                    }
+                    break;
                 }
-                break;
-            }
 
-            let adapter = option_adapter.unwrap(); // simplify below code
-            let _ = adapter.wait_available().await;
+                let adapter = option_adapter.unwrap(); // simplify below code
+                let _ = adapter.wait_available().await;
 
-            loop {
+                info!("sending AmReadyIdle(...)");
                 resp.send(AmReadyIdle(format!("{:?}", &adapter))).ok();
                 connect_bt_id = None;
 
@@ -248,10 +252,17 @@ pub fn spawn_btnus_thread(
 
                 match connect_bt_id {
                     Some(bt_id) => {
-                        let result = bt_nus_setup_and_loop(&adapter, &bt_id, &cmd, &resp).await;
+                        match bt_nus_setup_and_loop(&adapter, &bt_id, &cmd, &resp).await {
+                            Ok(_good) => {
+                                info!("succesful disconnect")
+                            }
+                            Err(e) => {
+                                error!("bad disconnect : {e}");
+                            }
+                        }
                     }
                     None => {
-                        continue;
+                        // nothing to do?
                     }
                 }
 

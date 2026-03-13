@@ -156,7 +156,7 @@ impl NusGui {
                 });
             }
             AmConnected => {
-                ui.label("TODO: implement UI to use connection!");
+                self.draw_central_panel_connected(ui);
             }
             AmDone => todo!(),
             unhandled => {
@@ -244,6 +244,12 @@ impl NusGui {
             table
         });
     } // end draw_central_panel
+
+    fn draw_central_panel_connected(&mut self, ui: &mut Ui) {
+        if ui.button("Disconnect").clicked() {
+            let _ = self.cmd_tx.send(DoDisconnect);
+        }
+    }
 }
 
 impl App for NusGui {
