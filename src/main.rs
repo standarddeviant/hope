@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use bluest::AdvertisingDevice;
 use bluest::DeviceId;
+use eframe::egui::TopBottomPanel;
 use eframe::egui::Vec2;
 use eframe::{App, CreationContext, Frame, egui};
 use egui::{Align, CentralPanel, Context, Layout, ThemePreference, Ui};
@@ -144,6 +145,10 @@ impl NusGui {
         }
     } // end process_inbox
 
+    fn draw_top_panel(&mut self, ui: &mut Ui) {
+        egui::widgets::global_theme_preference_buttons(ui);
+    }
+
     fn draw_central_panel(&mut self, ui: &mut Ui) {
         // make 'actionable copy' of bt_state so called functions can alter self.bt_state
         // let bt_state = self.bt_state.clone();
@@ -225,6 +230,7 @@ impl NusGui {
 
                     match row_data.bt_id {
                         Some(bt_id) => {
+                            self.nus_tx_multi_string.clear();
                             let _ = self.cmd_tx.send(DoConnect(bt_id));
                             self.bt_state = AmConnecting;
                         }
@@ -262,34 +268,15 @@ impl NusGui {
             let _ = self.cmd_tx.send(DoDisconnect);
         }
 
-        // Create a vertical scroll area
-        // egui::ScrollArea::vertical()
-        //     .stick_to_bottom(true)
-        //     .show(ui, |ui| {
-        // Add a multiline TextEdit widget inside the scroll area
-        // ui.add_sized(
-        //     ui.available_size(),
-        // egui::TextEdit::multiline(&mut self.tx_string).min_size(Vec2::new(50.0, 50.0));
-        // );
-        // });
-
-        // egui::ScrollArea::vertical().show(ui, |ui| {
-        //     egui::TextEdit::multiline(&mut self.tx_string) //
-        //         .font(egui::TextStyle::Monospace) // Monospace for terminal look
-        //         .desired_width(f32::INFINITY) // Take up all width
-        //         .lock_focus(true)
-        //         .show(ui);
-        // });
-
         egui::ScrollArea::both()
-            // .auto_shrink(true) //
+            .auto_shrink(false)
             .max_height(ui.available_height() - 30.0)
             .stick_to_bottom(true)
             .show(ui, |ui| {
                 ui.label("before text area...");
                 egui::TextEdit::multiline(&mut self.nus_tx_multi_string)
                     .font(egui::TextStyle::Monospace) // Monospace for terminal look
-                    .desired_rows(5)
+                    // .desired_height(f32::INFINITY)
                     .desired_width(f32::INFINITY)
                     .frame(true)
                     .show(ui);
@@ -309,12 +296,17 @@ impl NusGui {
             let rx_bytes = rx_string.into_bytes();
             let _ = self.cmd_tx.send(DataRx(rx_bytes)); // FIXME: check result
             self.nus_rx_single_string.clear();
+            nus_rx_line_input.request_focus(); // request focus on next frame 
         }
     }
 }
 
 impl App for NusGui {
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
+        TopBottomPanel::top("top_panel").show(ctx, |ui| {
+            self.draw_top_panel(ui);
+        });
+
         CentralPanel::default().show(ctx, |ui| {
             // WARN: this call to process_inbox has to be *somewhere* but...
             // the current function calls in process_inbox require ui: &Ui, but ....
