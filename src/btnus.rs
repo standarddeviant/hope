@@ -76,6 +76,11 @@ async fn bt_nus_setup_and_loop(
     // enable notifs on TX characteristic
     let mut nus_tx_notifs = nus_tx_chr.notify().await?;
 
+    info!(
+        "nus_tx_chr.is_notifying() = {:?}",
+        nus_tx_chr.is_notifying().await?
+    );
+
     info!("nus chars are ready!");
     let _ = resp.send(AmConnected);
 
@@ -97,13 +102,13 @@ async fn bt_nus_setup_and_loop(
                     break;
                 }
                 Ok(DataRx(rx_bytes)) => {
-                    info!("sending rx_bytes = {:?}", rx_bytes);
+                    debug!("attempt send rx_bytes = {:?}", rx_bytes);
                     match nus_rx_chr.write_without_response(&rx_bytes).await {
                         Ok(_good) => {
-                            info!("Sent bytes {rx_bytes:?}");
+                            info!("success send rx_bytes = {rx_bytes:?}");
                         }
                         Err(e) => {
-                            error!("{e}");
+                            error!("error send rx_bytes={rx_bytes:?} : {e}");
                         }
                     }
                 }
@@ -112,6 +117,7 @@ async fn bt_nus_setup_and_loop(
                 }
                 Err(rto) => {
                     debug!("RecvTimeoutErr = {rto}");
+                    break;
                 }
             }
         }
@@ -119,14 +125,14 @@ async fn bt_nus_setup_and_loop(
         // 2. check notifs via nus_tx_chr
         match timeout(Duration::from_millis(10), nus_tx_notifs.next()).await {
             Ok(Some(Ok(tx_bytes))) => {
-                info!("Recv bytes {:?}", &tx_bytes);
+                info!("success notif tx_bytes {:?}", &tx_bytes);
                 let _ = resp.send(DataTx(tx_bytes));
             }
             Ok(Some(Err(e))) => {
-                warn!("Unexpected... error = {e}");
+                error!("hmm.. error = {e}");
             }
             Ok(None) => {
-                warn!("Unexpected... no tx bytes?");
+                error!("hmm.. no tx bytes?");
             }
             Err(e) => {
                 debug!("elapsed {e}");

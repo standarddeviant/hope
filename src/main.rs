@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use bluest::AdvertisingDevice;
 use bluest::DeviceId;
+use eframe::egui::Vec2;
 use eframe::{App, CreationContext, Frame, egui};
 use egui::{Align, CentralPanel, Context, Layout, ThemePreference, Ui};
 use egui_extras::Column;
@@ -44,7 +45,8 @@ struct NusGui {
     table: SelectableTable<ScanRow, ScanColumns, ScanConfig>,
 
     // actual nus text data
-    tx_string: String,
+    nus_tx_multi_string: String,
+    nus_rx_single_string: String,
 }
 
 impl NusGui {
@@ -54,14 +56,14 @@ impl NusGui {
 
         // NOTE: async/thread comms
         let inbox: UiInbox<ThreadedNusMsg> = UiInbox::new();
-        let mut bt_state: ThreadedNusMsg = AmNotReady;
-        let mut scan_vec: Vec<AdvertisingDevice> = vec![];
-        let mut scan_map: HashMap<DeviceId, AdvertisingDevice> = HashMap::default();
+        let bt_state: ThreadedNusMsg = AmNotReady;
+        let scan_vec: Vec<AdvertisingDevice> = vec![];
+        let scan_map: HashMap<DeviceId, AdvertisingDevice> = HashMap::default();
 
         let scan_columns = ScanColumns::iter().collect();
 
         // Auto reload after each 10k table row add or modification
-        let mut table = SelectableTable::new(scan_columns)
+        let table = SelectableTable::new(scan_columns)
             .auto_reload(10_000)
             .auto_scroll()
             .horizontal_scroll()
@@ -74,7 +76,8 @@ impl NusGui {
         // NOTE: spawn btnus thread with async runtime
         spawn_btnus_thread(cmd_rx, resp_tx);
 
-        let mut tx_string: String = "".into();
+        let nus_tx_multi_string: String = "".into();
+        let nus_rx_single_string: String = "".into();
 
         Self {
             cmd_tx,
@@ -84,7 +87,8 @@ impl NusGui {
             scan_map,
             // scan_columns,
             table,
-            tx_string,
+            nus_tx_multi_string,
+            nus_rx_single_string,
         }
     }
 
@@ -101,7 +105,9 @@ impl NusGui {
                     self.bt_state = m;
                 }
                 DataTx(nus_tx_bytes) => {
-                    warn!("Unhandled NUS Tx Bytes = {nus_tx_bytes:?}");
+                    // warn!("Unhandled NUS Tx Bytes = {nus_tx_bytes:?}");
+                    let tmp_str = String::from_utf8_lossy(&nus_tx_bytes);
+                    self.nus_tx_multi_string.push_str(&tmp_str);
                 }
                 DataScanResult(recvd_scans) => {
                     // scan_vec.extend(new_scans);
@@ -257,21 +263,44 @@ impl NusGui {
         }
 
         // Create a vertical scroll area
-        egui::ScrollArea::vertical()
-            .stick_to_bottom(true)
-            .show(ui, |ui| {
-                // Add a multiline TextEdit widget inside the scroll area
-                // ui.add_sized(
-                //     ui.available_size(),
-                egui::TextEdit::multiline(&mut self.tx_string);
-                // );
-            });
-        let mut input_text: String = "".into();
-        let input = ui.text_edit_singleline(&mut input_text);
+        // egui::ScrollArea::vertical()
+        //     .stick_to_bottom(true)
+        //     .show(ui, |ui| {
+        // Add a multiline TextEdit widget inside the scroll area
+        // ui.add_sized(
+        //     ui.available_size(),
+        // egui::TextEdit::multiline(&mut self.tx_string).min_size(Vec2::new(50.0, 50.0));
+        // );
+        // });
+
+        ui.label("before text area...");
+
+        // egui::ScrollArea::vertical().show(ui, |ui| {
+        //     egui::TextEdit::multiline(&mut self.tx_string) //
+        //         .font(egui::TextStyle::Monospace) // Monospace for terminal look
+        //         .desired_width(f32::INFINITY) // Take up all width
+        //         .lock_focus(true)
+        //         .show(ui);
+        // });
+
+        egui::ScrollArea::both().auto_shrink(true).show(ui, |ui| {
+            egui::TextEdit::multiline(&mut self.nus_tx_multi_string)
+                .font(egui::TextStyle::Monospace) // Monospace for terminal look
+                .desired_rows(5)
+                .desired_width(f32::INFINITY)
+                .frame(true)
+                .show(ui);
+        });
+
+        ui.label("after text area...");
+
+        let input = ui.text_edit_singleline(&mut self.nus_rx_single_string);
         if input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-            info!("Sending DataRx({input_text})");
-            let input_bytes = input_text.into_bytes();
-            let _ = self.cmd_tx.send(DataRx(input_bytes));
+            let rx_string = format!("{}\n", self.nus_rx_single_string.trim()); // clone+trim+newline
+            info!("Sending (with bytes): DataRx({})", rx_string);
+            let rx_bytes = rx_string.into_bytes();
+            let _ = self.cmd_tx.send(DataRx(rx_bytes)); // FIXME: check result
+            self.nus_rx_single_string.clear();
         }
     }
 }
