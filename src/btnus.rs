@@ -125,7 +125,7 @@ async fn bt_nus_setup_and_loop(
         // 2. check notifs via nus_tx_chr
         match timeout(Duration::from_millis(10), nus_tx_notifs.next()).await {
             Ok(Some(Ok(tx_bytes))) => {
-                info!("success notif tx_bytes {:?}", &tx_bytes);
+                info!("success notif tx_bytes.len() = {:?}", tx_bytes.len());
                 let _ = resp.send(DataTx(tx_bytes));
             }
             Ok(Some(Err(e))) => {

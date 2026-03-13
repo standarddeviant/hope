@@ -273,8 +273,6 @@ impl NusGui {
         // );
         // });
 
-        ui.label("before text area...");
-
         // egui::ScrollArea::vertical().show(ui, |ui| {
         //     egui::TextEdit::multiline(&mut self.tx_string) //
         //         .font(egui::TextStyle::Monospace) // Monospace for terminal look
@@ -283,19 +281,29 @@ impl NusGui {
         //         .show(ui);
         // });
 
-        egui::ScrollArea::both().auto_shrink(true).show(ui, |ui| {
-            egui::TextEdit::multiline(&mut self.nus_tx_multi_string)
-                .font(egui::TextStyle::Monospace) // Monospace for terminal look
-                .desired_rows(5)
-                .desired_width(f32::INFINITY)
-                .frame(true)
-                .show(ui);
-        });
+        egui::ScrollArea::both()
+            // .auto_shrink(true) //
+            .max_height(ui.available_height() - 30.0)
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                ui.label("before text area...");
+                egui::TextEdit::multiline(&mut self.nus_tx_multi_string)
+                    .font(egui::TextStyle::Monospace) // Monospace for terminal look
+                    .desired_rows(5)
+                    .desired_width(f32::INFINITY)
+                    .frame(true)
+                    .show(ui);
 
-        ui.label("after text area...");
+                ui.label("after text area...");
+            });
 
-        let input = ui.text_edit_singleline(&mut self.nus_rx_single_string);
-        if input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+        let nus_rx_line_edit = egui::TextEdit::singleline(&mut self.nus_rx_single_string)
+            .min_size(Vec2::new(200.0, 30.0)) // Set min width/height
+            .show(ui);
+        // let input = ui.text_edit_singleline(&mut self.nus_rx_single_string);
+        let nus_rx_line_input = nus_rx_line_edit.response;
+
+        if nus_rx_line_input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             let rx_string = format!("{}\n", self.nus_rx_single_string.trim()); // clone+trim+newline
             info!("Sending (with bytes): DataRx({})", rx_string);
             let rx_bytes = rx_string.into_bytes();
