@@ -42,6 +42,9 @@ struct NusGui {
 
     // Auto reload after each 10k table row add or modification
     table: SelectableTable<ScanRow, ScanColumns, ScanConfig>,
+
+    // actual nus text data
+    tx_string: String,
 }
 
 impl NusGui {
@@ -71,6 +74,8 @@ impl NusGui {
         // NOTE: spawn btnus thread with async runtime
         spawn_btnus_thread(cmd_rx, resp_tx);
 
+        let mut tx_string: String = "".into();
+
         Self {
             cmd_tx,
             inbox,
@@ -79,6 +84,7 @@ impl NusGui {
             scan_map,
             // scan_columns,
             table,
+            tx_string,
         }
     }
 
@@ -248,6 +254,24 @@ impl NusGui {
     fn draw_central_panel_connected(&mut self, ui: &mut Ui) {
         if ui.button("Disconnect").clicked() {
             let _ = self.cmd_tx.send(DoDisconnect);
+        }
+
+        // Create a vertical scroll area
+        egui::ScrollArea::vertical()
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                // Add a multiline TextEdit widget inside the scroll area
+                // ui.add_sized(
+                //     ui.available_size(),
+                egui::TextEdit::multiline(&mut self.tx_string);
+                // );
+            });
+        let mut input_text: String = "".into();
+        let input = ui.text_edit_singleline(&mut input_text);
+        if input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            info!("Sending DataRx({input_text})");
+            let input_bytes = input_text.into_bytes();
+            let _ = self.cmd_tx.send(DataRx(input_bytes));
         }
     }
 }

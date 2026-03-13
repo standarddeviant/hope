@@ -153,7 +153,10 @@ pub fn spawn_btnus_thread(
     std::thread::spawn(move || {
         let rt = Runtime::new().expect("Failed to create runtime");
         rt.block_on(async {
+            // continually loop through....
+            // idle -> scanning -> connecting -> connected -> (back to idle)
             loop {
+                // NOTE: state 1a-of-4: idle (not ready)
                 let mut connect_bt_id: Option<DeviceId> = None;
                 let mut scan_map: HashMap<DeviceId, Device> = HashMap::new();
                 let mut option_adapter = None;
@@ -175,6 +178,7 @@ pub fn spawn_btnus_thread(
                 resp.send(AmReadyIdle(format!("{:?}", &adapter))).ok();
                 connect_bt_id = None;
 
+                // NOTE: state 1b-of-4: idle (ready)
                 info!("btnus waiting for {:?}", DoScanStart("".into()));
                 loop {
                     match cmd.recv_async().await {
@@ -195,6 +199,8 @@ pub fn spawn_btnus_thread(
                         }
                     }
                 }
+
+                // NOTE: state 2-of-4: scanning
 
                 // NOTE: putting scan in its own scope has the effect...
                 //       when the the scan stream is dropped
@@ -250,8 +256,10 @@ pub fn spawn_btnus_thread(
                     info!("scan stopped")
                 } // end start-scan, i.e. if connect_bt_id.is_none()
 
+                // NOTE: state 3-of-4: connecting
                 match connect_bt_id {
                     Some(bt_id) => {
+                        // NOTE: state 4-of-4: connected (handled inside async fn)
                         match bt_nus_setup_and_loop(&adapter, &bt_id, &cmd, &resp).await {
                             Ok(_good) => {
                                 info!("succesful disconnect")
