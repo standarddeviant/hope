@@ -374,9 +374,6 @@ impl NusGui {
                     nus_rx_line_edit.state.store(ui.ctx(), nus_rx_line_input.id);
                 }
 
-                // handle input field history
-                self.process_input_history(ui);
-
                 if nus_rx_line_input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     // use trimmed string for history + debug logging
                     let rx_string = format!("{}", self.nus_rx_single_string.trim()); // clone+trim
@@ -391,8 +388,11 @@ impl NusGui {
                     nus_rx_line_input.request_focus();
 
                     // reset history index...
-                    self.nus_rx_history_index = Some(self.nus_rx_history.len() - 1);
+                    self.nus_rx_history_index = None;
                 }
+
+                // handle input field history after we maybe just added something
+                self.process_input_history(ui);
             });
         });
     }
