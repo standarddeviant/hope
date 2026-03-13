@@ -5,6 +5,7 @@ use bluest::AdvertisingDevice;
 use bluest::DeviceId;
 use eframe::egui::{Button, TopBottomPanel, Vec2};
 use eframe::{App, CreationContext, Frame, egui, epaint::Color32};
+use egui::text::{CCursor, CCursorRange};
 use egui::{Align, CentralPanel, Context, Layout, ThemePreference, Ui};
 use egui_extras::Column;
 use egui_inbox::{UiInbox, UiInboxSender};
@@ -48,6 +49,9 @@ struct NusGui {
     // actual nus text data
     nus_tx_multi_string: String,
     nus_rx_single_string: String,
+    nus_rx_history: Vec<String>,
+    nus_rx_history_index: Option<usize>,
+    nus_rx_snap_cursor: bool,
 }
 
 impl NusGui {
@@ -79,6 +83,9 @@ impl NusGui {
 
         let nus_tx_multi_string: String = "".into();
         let nus_rx_single_string: String = "".into();
+        let nus_rx_history = vec![];
+        let nus_rx_history_index = None;
+        let nus_rx_snap_cursor = false;
 
         Self {
             cmd_tx,
@@ -90,7 +97,44 @@ impl NusGui {
             table,
             nus_tx_multi_string,
             nus_rx_single_string,
+            nus_rx_history,
+            nus_rx_history_index,
+            nus_rx_snap_cursor,
         }
+    }
+
+    fn process_input_history(&mut self, ui: &mut Ui) {
+        ui.input(|i| {
+            if i.key_pressed(egui::Key::ArrowUp) {
+                self.nus_rx_snap_cursor = true;
+                if let Some(index) = self.nus_rx_history_index {
+                    if index > 0 {
+                        self.nus_rx_history_index = Some(index - 1);
+                        self.nus_rx_single_string
+                            .clone_from(&self.nus_rx_history[index - 1]);
+                    }
+                } else if !self.nus_rx_history.is_empty() {
+                    // Start navigating from the last entry
+                    let index = self.nus_rx_history.len() - 1;
+                    self.nus_rx_history_index = Some(index);
+                    self.nus_rx_single_string
+                        .clone_from(&self.nus_rx_history[index]);
+                }
+            } else if i.key_pressed(egui::Key::ArrowDown) {
+                self.nus_rx_snap_cursor = true;
+                if let Some(index) = self.nus_rx_history_index {
+                    if index < self.nus_rx_history.len() - 1 {
+                        self.nus_rx_history_index = Some(index + 1);
+                        self.nus_rx_single_string
+                            .clone_from(&self.nus_rx_history[index + 1]);
+                    } else {
+                        // Reached the end of history, clear input
+                        self.nus_rx_history_index = None;
+                        self.nus_rx_single_string.clear();
+                    }
+                }
+            }
+        });
     }
 
     fn process_inbox(&mut self, ui: &mut Ui) {
@@ -304,19 +348,50 @@ impl NusGui {
         ui.with_layout(Layout::left_to_right(Align::BOTTOM), |ui| {
             ui.horizontal(|ui| {
                 ui.label("Send: ");
-                let nus_rx_line_edit = egui::TextEdit::singleline(&mut self.nus_rx_single_string)
-                    .min_size(Vec2::new(200.0, 25.0)) // Set min width/height
-                    .show(ui);
+                let mut nus_rx_line_edit =
+                    egui::TextEdit::singleline(&mut self.nus_rx_single_string)
+                        .min_size(Vec2::new(200.0, 25.0)) // Set min width/height
+                        .show(ui);
+                // if self.nus_rx_snap_cursor {
+                //     nus_rx_line_edit.mo
+                //
+                // }
                 // let input = ui.text_edit_singleline(&mut self.nus_rx_single_string);
                 let nus_rx_line_input = nus_rx_line_edit.response;
+                if self.nus_rx_snap_cursor {
+                    self.nus_rx_snap_cursor = false;
+                    // Create a new selection range with both start and end at the text length
+                    let cursor_pos = self.nus_rx_single_string.len();
+                    let min = CCursor::new(cursor_pos);
+                    let max = CCursor::new(cursor_pos);
+                    let new_range = CCursorRange::two(min, max);
+
+                    // Update the state
+                    nus_rx_line_edit
+                        .state
+                        .cursor
+                        .set_char_range(Some(new_range));
+                    nus_rx_line_edit.state.store(ui.ctx(), nus_rx_line_input.id);
+                }
+
+                // handle input field history
+                self.process_input_history(ui);
 
                 if nus_rx_line_input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    let rx_string = format!("{}\n", self.nus_rx_single_string.trim()); // clone+trim+newline
+                    // use trimmed string for history + debug logging
+                    let rx_string = format!("{}", self.nus_rx_single_string.trim()); // clone+trim
+                    self.nus_rx_history.push(rx_string.clone());
                     info!("Sending (with bytes): DataRx({})", rx_string);
+
+                    // add newline for actually sending
+                    let rx_string = format!("{rx_string}\n");
                     let rx_bytes = rx_string.into_bytes();
                     let _ = self.cmd_tx.send(DataRx(rx_bytes)); // FIXME: check result
                     self.nus_rx_single_string.clear();
-                    nus_rx_line_input.request_focus(); // request focus on next frame 
+                    nus_rx_line_input.request_focus();
+
+                    // reset history index...
+                    self.nus_rx_history_index = Some(self.nus_rx_history.len() - 1);
                 }
             });
         });
