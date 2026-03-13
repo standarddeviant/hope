@@ -1,10 +1,10 @@
+use core::f32;
 use std::collections::HashMap;
 
 use bluest::AdvertisingDevice;
 use bluest::DeviceId;
-use eframe::egui::TopBottomPanel;
-use eframe::egui::Vec2;
-use eframe::{App, CreationContext, Frame, egui};
+use eframe::egui::{Button, TopBottomPanel, Vec2};
+use eframe::{App, CreationContext, Frame, egui, epaint::Color32};
 use egui::{Align, CentralPanel, Context, Layout, ThemePreference, Ui};
 use egui_extras::Column;
 use egui_inbox::{UiInbox, UiInboxSender};
@@ -145,8 +145,25 @@ impl NusGui {
         }
     } // end process_inbox
 
-    fn draw_top_panel(&mut self, ui: &mut Ui) {
-        egui::widgets::global_theme_preference_buttons(ui);
+    fn draw_top_panel(&mut self, ctx: &Context, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            egui::widgets::global_theme_preference_buttons(ui);
+
+            let quit_button = Button::new(
+                // Use RichText to customize the text color
+                egui::RichText::new("QUIT").color(Color32::WHITE), // Set the text color to white
+            )
+            // Use the fill method to set the button's background color to red
+            .fill(Color32::RED); //
+            //
+            if ui.add(quit_button).clicked() {
+                let _ = self.cmd_tx.send(DoDisconnect);
+                let _ = self.cmd_tx.send(DoQuit);
+                // self.bt_state = AmQuitting;
+                // FIXME: clean up disconnect+quit logic to ensure actual BT disconnect
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        });
     }
 
     fn draw_central_panel(&mut self, ui: &mut Ui) {
@@ -268,43 +285,48 @@ impl NusGui {
             let _ = self.cmd_tx.send(DoDisconnect);
         }
 
+        // TODO: add multiline text edit via ui.enabled(false) w/ diff. APIs
+        //       reason: adding .interactive(false) to multiline TextEdit makes the text
+        //       unselectable and uncopy-able
         egui::ScrollArea::both()
             .auto_shrink(false)
             .max_height(ui.available_height() - 30.0)
             .stick_to_bottom(true)
             .show(ui, |ui| {
-                ui.label("before text area...");
                 egui::TextEdit::multiline(&mut self.nus_tx_multi_string)
                     .font(egui::TextStyle::Monospace) // Monospace for terminal look
-                    // .desired_height(f32::INFINITY)
                     .desired_width(f32::INFINITY)
+                    .interactive(false)
                     .frame(true)
                     .show(ui);
-
-                ui.label("after text area...");
             });
 
-        let nus_rx_line_edit = egui::TextEdit::singleline(&mut self.nus_rx_single_string)
-            .min_size(Vec2::new(200.0, 30.0)) // Set min width/height
-            .show(ui);
-        // let input = ui.text_edit_singleline(&mut self.nus_rx_single_string);
-        let nus_rx_line_input = nus_rx_line_edit.response;
+        ui.with_layout(Layout::left_to_right(Align::BOTTOM), |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Send: ");
+                let nus_rx_line_edit = egui::TextEdit::singleline(&mut self.nus_rx_single_string)
+                    .min_size(Vec2::new(200.0, 25.0)) // Set min width/height
+                    .show(ui);
+                // let input = ui.text_edit_singleline(&mut self.nus_rx_single_string);
+                let nus_rx_line_input = nus_rx_line_edit.response;
 
-        if nus_rx_line_input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-            let rx_string = format!("{}\n", self.nus_rx_single_string.trim()); // clone+trim+newline
-            info!("Sending (with bytes): DataRx({})", rx_string);
-            let rx_bytes = rx_string.into_bytes();
-            let _ = self.cmd_tx.send(DataRx(rx_bytes)); // FIXME: check result
-            self.nus_rx_single_string.clear();
-            nus_rx_line_input.request_focus(); // request focus on next frame 
-        }
+                if nus_rx_line_input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    let rx_string = format!("{}\n", self.nus_rx_single_string.trim()); // clone+trim+newline
+                    info!("Sending (with bytes): DataRx({})", rx_string);
+                    let rx_bytes = rx_string.into_bytes();
+                    let _ = self.cmd_tx.send(DataRx(rx_bytes)); // FIXME: check result
+                    self.nus_rx_single_string.clear();
+                    nus_rx_line_input.request_focus(); // request focus on next frame 
+                }
+            });
+        });
     }
 }
 
 impl App for NusGui {
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
         TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            self.draw_top_panel(ui);
+            self.draw_top_panel(ctx, ui);
         });
 
         CentralPanel::default().show(ctx, |ui| {
@@ -337,7 +359,11 @@ pub fn main() -> eframe::Result<()> {
         .init();
 
     let options = eframe::NativeOptions::default();
-    eframe::run_native("", options, Box::new(|cc| Ok(Box::new(NusGui::new(cc)))))
+    eframe::run_native(
+        "NUS GUI",
+        options,
+        Box::new(|cc| Ok(Box::new(NusGui::new(cc)))),
+    )
 }
 
 fn scan_obj_to_scan_row(scan_obj: &AdvertisingDevice) -> ScanRow {
