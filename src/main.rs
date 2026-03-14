@@ -1,41 +1,514 @@
-use eframe::egui;
-use egui::CentralPanel;
-use egui_inbox::UiInbox;
+use core::f32;
+use std::collections::HashMap;
 
-use tokio::runtime::Runtime;
+use bluest::AdvertisingDevice;
+use bluest::DeviceId;
+use eframe::egui::{Button, TopBottomPanel, Vec2};
+use eframe::epaint::color;
+use eframe::{App, CreationContext, Frame, egui, epaint::Color32};
+use egui_colors::Colorix;
+// use egui_colors::{Colorix; ThemeColor};
+use egui::text::{CCursor, CCursorRange};
+use egui::{Align, CentralPanel, Context, Layout, ThemePreference, Ui};
+use egui_extras::Column;
+use egui_inbox::{UiInbox, UiInboxSender};
+use egui_selectable_table::SelectableTable;
 
-pub fn main() -> eframe::Result<()> {
-    let inbox = UiInbox::new();
-    let mut state = None;
+use flume;
 
-    eframe::run_simple_native(
-        "DnD Simple Example",
-        Default::default(),
-        move |ctx, _frame| {
-            CentralPanel::default().show(ctx, |ui| {
-                // `read` will return an iterator over all pending messages
-                if let Some(last) = inbox.read(ui).last() {
-                    state = last;
+mod btnus;
+mod scan_table;
+
+use btnus::ThreadedNusMsg::*;
+use btnus::spawn_btnus_thread;
+
+use tracing::metadata::LevelFilter;
+use tracing_subscriber::filter;
+use tracing_subscriber::prelude::*;
+
+use tracing::{info, warn};
+
+use crate::btnus::ThreadedNusMsg;
+use crate::scan_table::{ScanColumns, ScanConfig, ScanRow};
+
+use strum::IntoEnumIterator;
+use strum_macros::{Display, EnumIter}; // 0.25
+//
+use flume::Sender;
+
+struct NusGui {
+    // NOTE: async/thread comms
+    cmd_tx: Sender<ThreadedNusMsg>,
+    inbox: UiInbox<ThreadedNusMsg>, // = UiInbox::new();
+    // resp_tx: UiInboxSender<ThreadedNusMsg>,
+    bt_state: ThreadedNusMsg,                        // = AmNotReady;
+    bt_handle: std::thread::JoinHandle<Option<u32>>, //
+    scan_vec: Vec<AdvertisingDevice>,                // = vec![];
+    scan_map: HashMap<DeviceId, AdvertisingDevice>,  // = HashMap::default();
+    // scan_columns: Vec<ScanColumns>,              //::iter().collect();
+
+    // Auto reload after each 10k table row add or modification
+    table: SelectableTable<ScanRow, ScanColumns, ScanConfig>,
+
+    // actual nus text data
+    nus_tx_multi_string: String,
+    nus_rx_single_string: String,
+    nus_rx_history: Vec<String>,
+    nus_rx_history_index: Option<usize>,
+    nus_rx_snap_cursor: bool,
+
+    do_quit: bool,
+    latch_once: bool,
+    colorix: Colorix,
+}
+
+const PEACH32: Color32 = Color32::from_rgb(0xFF, 0xD3, 0xAC);
+
+impl NusGui {
+    // pub fn wait_on_bt_nus_thread(&mut self) {
+    //     std::thread::jo
+    //     //
+    // }
+    pub fn new(ctx: &Context, cc: &CreationContext) -> Self {
+        cc.egui_ctx
+            .options_mut(|a| a.theme_preference = ThemePreference::System);
+
+        // NOTE: async/thread comms
+        let inbox: UiInbox<ThreadedNusMsg> = UiInbox::new();
+        let bt_state: ThreadedNusMsg = AmNotReady;
+        let scan_vec: Vec<AdvertisingDevice> = vec![];
+        let scan_map: HashMap<DeviceId, AdvertisingDevice> = HashMap::default();
+
+        let scan_columns = ScanColumns::iter().collect();
+
+        // Auto reload after each 10k table row add or modification
+        let table = SelectableTable::new(scan_columns)
+            .auto_reload(10_000)
+            .auto_scroll()
+            .horizontal_scroll()
+            .select_full_row()
+            .no_ctrl_a_capture();
+
+        let (cmd_tx, cmd_rx) = flume::unbounded();
+        let resp_tx = inbox.sender();
+
+        // NOTE: spawn btnus thread with async runtime
+        let bt_handle: std::thread::JoinHandle<Option<u32>> = spawn_btnus_thread(cmd_rx, resp_tx);
+
+        let nus_tx_multi_string: String = "".into();
+        let nus_rx_single_string: String = "".into();
+        let nus_rx_history = vec![];
+        let nus_rx_history_index = None;
+        let nus_rx_snap_cursor = false;
+
+        let colorix = Colorix::global(ctx, egui_colors::utils::EGUI_THEME);
+
+        Self {
+            cmd_tx,
+            inbox,
+            bt_state,
+            bt_handle,
+            scan_vec,
+            scan_map,
+            // scan_columns,
+            table,
+            nus_tx_multi_string,
+            nus_rx_single_string,
+            nus_rx_history,
+            nus_rx_history_index,
+            nus_rx_snap_cursor,
+            //
+            do_quit: false,
+            latch_once: true,
+            colorix,
+        }
+    }
+
+    fn process_input_history(&mut self, ui: &mut Ui) {
+        ui.input(|i| {
+            if i.key_pressed(egui::Key::ArrowUp) {
+                self.nus_rx_snap_cursor = true;
+                if let Some(index) = self.nus_rx_history_index {
+                    if index > 0 {
+                        self.nus_rx_history_index = Some(index - 1);
+                        self.nus_rx_single_string
+                            .clone_from(&self.nus_rx_history[index - 1]);
+                    }
+                } else if !self.nus_rx_history.is_empty() {
+                    // Start navigating from the last entry
+                    let index = self.nus_rx_history.len() - 1;
+                    self.nus_rx_history_index = Some(index);
+                    self.nus_rx_single_string
+                        .clone_from(&self.nus_rx_history[index]);
                 }
-                // There also is a `replace` method that you can use as a shorthand for the above:
-                // inbox.replace(ui, &mut state);
+            } else if i.key_pressed(egui::Key::ArrowDown) {
+                self.nus_rx_snap_cursor = true;
+                if let Some(index) = self.nus_rx_history_index {
+                    if index < self.nus_rx_history.len() - 1 {
+                        self.nus_rx_history_index = Some(index + 1);
+                        self.nus_rx_single_string
+                            .clone_from(&self.nus_rx_history[index + 1]);
+                    } else {
+                        // Reached the end of history, clear input
+                        self.nus_rx_history_index = None;
+                        self.nus_rx_single_string.clear();
+                    }
+                }
+            }
+        });
+    }
 
-                ui.label(format!("State: {:?}", state));
-                if ui.button("Async Task").clicked() {
-                    state = Some("Waiting for async task to complete".to_string());
-                    let tx = inbox.sender();
-                    std::thread::spawn(move || {
-                        let rt = Runtime::new().expect("Failed to create runtime");
-                        rt.block_on(async {
-                            std::thread::sleep(std::time::Duration::from_secs(1));
-                            // Send will return an error if the receiver has been dropped
-                            // but unless you have a long running task that will send multiple messages
-                            // you can just ignore the error
-                            tx.send(Some("Hello from another thread!".to_string())).ok();
-                        });
-                    });
+    fn process_inbox(&mut self, _ctx: &Context, ui: &mut Ui) {
+        // loop through all received responses
+        for response in self.inbox.read(ui) {
+            let m = response.clone();
+            // let m = response;
+            match m {
+                AmQuitted => {
+                    self.do_quit = true;
+                }
+                AmReadyIdle(adapter_desc) => {
+                    self.bt_state = AmReadyIdle(adapter_desc.clone());
+                }
+                AmNotReady | AmScanning | AmConnecting | AmConnected => {
+                    self.bt_state = m;
+                }
+                DataTx(nus_tx_bytes) => {
+                    // TODO: implement a more robust strategy for handling utf8 errors...
+                    //       using lossy function is okay for now
+                    let tmp_str = String::from_utf8_lossy(&nus_tx_bytes);
+                    self.nus_tx_multi_string.push_str(&tmp_str);
+
+                    // TODO: add incremental file logging here
+                }
+                DataScanResult(recvd_scans) => {
+                    // scan_vec.extend(new_scans);
+                    for adv_dev in recvd_scans {
+                        let id = adv_dev.device.id();
+                        let unique = !self.scan_map.contains_key(&id);
+                        if unique {
+                            self.scan_map.insert(id, adv_dev.clone());
+                            self.scan_vec.push(adv_dev);
+                            for scan_obj in &self.scan_vec {
+                                self.table.add_modify_row(|rows| {
+                                    // edit row here
+                                    for r in rows {
+                                        if r.1.row_data.bt_id.eq(&Some(scan_obj.device.id())) {
+                                            // copy the just-received thread_infos the correct table row correct
+                                            // table row data
+                                            r.1.row_data = scan_obj_to_scan_row(&scan_obj);
+                                            return None; // indicate we modified a row, don't add a new one
+                                        }
+                                    }
+                                    let scan_row = scan_obj_to_scan_row(&scan_obj);
+                                    // indicate we didn't find a row to modify, so add this data as a new row
+                                    return Some(scan_row);
+                                });
+                            }
+                            self.table.recreate_rows();
+                        }
+                    }
+                }
+                unhandled => {
+                    warn!("unhandled msg = {unhandled:?}");
+                }
+            }
+        }
+    } // end process_inbox
+
+    fn draw_top_panel(&mut self, _ctx: &Context, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            // egui::widgets::global_theme_preference_buttons(ui);
+            self.colorix.light_dark_toggle_button(ui, 30.0);
+            ui.add_space(10.);
+            self.colorix.themes_dropdown(ui, None, false);
+
+            let discon_button = Button::new(
+                // Use RichText to customize the text color
+                egui::RichText::new("Disconnect").color(Color32::BLACK), // Set the text color to white
+            )
+            // Use the fill method to set the button's background color to red
+            .fill(PEACH32); //
+
+            if AmConnected == self.bt_state {
+                if ui.add(discon_button).clicked() {
+                    let _ = self.cmd_tx.send(DoDisconnect);
+                }
+            }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let quit_button = Button::new(
+                    // Use RichText to customize the text color
+                    egui::RichText::new("QUIT").color(Color32::WHITE), // Set the text color to white
+                )
+                // Use the fill method to set the button's background color to red
+                .fill(Color32::RED); //
+                //
+                if ui.add(quit_button).clicked() {
+                    let _ = self.cmd_tx.send(DoQuit);
+                    // self.bt_state = AmQuitting;
+                    // FIXME: clean up disconnect+quit logic to ensure actual BT disconnect
+                    // ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             });
-        },
+        });
+    }
+
+    fn draw_central_panel(&mut self, ctx: &Context, ui: &mut Ui) {
+        // make 'actionable copy' of bt_state so called functions can alter self.bt_state
+        // let bt_state = self.bt_state.clone();
+        match self.bt_state.clone() {
+            AmNotReady => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Waiting for BT hardware...");
+                });
+                ui.label("Is there BT hardware connected?");
+            }
+            AmReadyIdle(_adapter_name) => {
+                self.draw_central_panel_idle_scan(ui);
+            }
+            AmScanning => {
+                self.draw_central_panel_idle_scan(ui);
+            }
+            AmConnecting => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Waiting for BT connection...");
+                });
+            }
+            AmConnected => {
+                self.draw_central_panel_connected(ui);
+            }
+            unhandled => {
+                ui.label(format!(
+                    "Well, this is awkward, I didn't expect to be in a state of {:?}",
+                    unhandled
+                ));
+            }
+        }
+    }
+
+    fn draw_central_panel_idle_scan(&mut self, ui: &mut Ui) {
+        ui.label(format!("State: {:?}", self.bt_state));
+        ui.label(format!("Found {} devices", self.scan_map.len()));
+
+        // scan start/stop
+        ui.horizontal(|ui| {
+            let start_enabled = matches!(self.bt_state, AmReadyIdle(_));
+            let stop_enabled = matches!(self.bt_state, AmScanning);
+            ui.add_enabled_ui(start_enabled, |ui| {
+                if ui.button("Start Scan").clicked() {
+                    // TODO: provide actual scan options into DoScanStart message from UI
+                    let send_start_scan_res = self.cmd_tx.send(DoScanStart("".into()));
+                    info!("send_start_scan_res = {send_start_scan_res:?}");
+                }
+            });
+            ui.add_enabled_ui(stop_enabled, |ui| {
+                if ui.button("Stop Scan").clicked() {
+                    let send_stop_scan_res = self.cmd_tx.send(DoScanStop);
+                    info!("send_stop_scan_res = {send_stop_scan_res:?}");
+                }
+            });
+            if ui.button("Clear Scan List").clicked() {
+                self.scan_map.clear();
+                self.scan_vec.clear();
+                self.table.clear_all_rows();
+                self.table.recreate_rows();
+            }
+        });
+
+        let work_row_id = self.table.config.connect_row_id;
+        if let Some(connect_row_id) = work_row_id {
+            // latch variable out
+            self.table.config.connect_row_id = None;
+
+            let row_map = self.table.get_all_rows();
+            match row_map.get(&connect_row_id) {
+                Some(connect_row) => {
+                    let row_data = connect_row.row_data.clone();
+                    info!(
+                        "Should connect to name={}, rssi={}, bt_id={:?}", //
+                        row_data.name, row_data.rssi, row_data.bt_id
+                    );
+
+                    match row_data.bt_id {
+                        Some(bt_id) => {
+                            self.nus_tx_multi_string.clear();
+                            let _ = self.cmd_tx.send(DoConnect(bt_id));
+                            self.bt_state = AmConnecting;
+                        }
+                        None => {
+                            warn!("Couldn't get bt_id from select/connect row_data");
+                        }
+                    }
+                }
+                None => {
+                    warn!("Couldn't resolve row id {connect_row_id}");
+                }
+            }
+            return;
+        }
+
+        self.table.show_ui(ui, |table| {
+            let mut table = table
+                .drag_to_scroll(false)
+                .striped(true)
+                .resizable(true)
+                .cell_layout(Layout::left_to_right(Align::Center))
+                .auto_shrink([false; 2])
+                .min_scrolled_height(0.0);
+
+            for _col in ScanColumns::iter() {
+                // table = table.column(Column::initial(150.0))
+                table = table.column(Column::auto())
+            }
+            table
+        });
+    } // end draw_central_panel
+
+    fn draw_central_panel_connected(&mut self, ui: &mut Ui) {
+        // TODO: add multiline text edit via ui.enabled(false) w/ diff. APIs
+        //       reason: adding .interactive(false) to multiline TextEdit makes the text
+        //       unselectable and uncopy-able
+        let text_color = ui.visuals().text_color();
+        egui::ScrollArea::both()
+            .auto_shrink(false)
+            .max_height(ui.available_height() - 30.0)
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                ui.add_enabled(
+                    true,
+                    egui::TextEdit::multiline(&mut self.nus_tx_multi_string.to_owned())
+                        .font(egui::TextStyle::Monospace) // Monospace for terminal look
+                        .desired_width(f32::INFINITY)
+                        // .min_size(Vec2::new(ui.available_width(), ui.available_height()))
+                        .min_size(ui.available_size())
+                        .interactive(true)
+                        .frame(true)
+                        .text_color(text_color), // .text_color(egui::Color32::from_rgb(0xDD, 0xDD, 0xDD)),
+                                                 // .show(ui);
+                );
+            });
+
+        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Send: ").monospace());
+                let mut nus_rx_line_edit =
+                    egui::TextEdit::singleline(&mut self.nus_rx_single_string)
+                        .font(egui::TextStyle::Monospace) // Monospace for terminal look
+                        .desired_width(f32::INFINITY)
+                        .min_size(Vec2::new(200.0, 25.0)) // Set min width/height
+                        .show(ui);
+                // if self.nus_rx_snap_cursor {
+                //     nus_rx_line_edit.mo
+                //
+                // }
+                // let input = ui.text_edit_singleline(&mut self.nus_rx_single_string);
+                let nus_rx_line_input = nus_rx_line_edit.response;
+                if self.nus_rx_snap_cursor {
+                    self.nus_rx_snap_cursor = false;
+                    // Create a new selection range with both start and end at the text length
+                    let cursor_pos = self.nus_rx_single_string.len();
+                    let min = CCursor::new(cursor_pos);
+                    let max = CCursor::new(cursor_pos);
+                    let new_range = CCursorRange::two(min, max);
+
+                    // Update the state
+                    nus_rx_line_edit
+                        .state
+                        .cursor
+                        .set_char_range(Some(new_range));
+                    nus_rx_line_edit.state.store(ui.ctx(), nus_rx_line_input.id);
+                }
+
+                if nus_rx_line_input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    // use trimmed string for history + debug logging
+                    let rx_string = format!("{}", self.nus_rx_single_string.trim()); // clone+trim
+                    self.nus_rx_history.push(rx_string.clone());
+                    info!("Sending (with bytes): DataRx({})", rx_string);
+
+                    // add newline for actually sending
+                    let rx_string = format!("{rx_string}\n");
+                    let rx_bytes = rx_string.into_bytes();
+                    let _ = self.cmd_tx.send(DataRx(rx_bytes)); // FIXME: check result
+                    self.nus_rx_single_string.clear();
+                    nus_rx_line_input.request_focus();
+
+                    // reset history index...
+                    self.nus_rx_history_index = None;
+                }
+
+                // handle input field history after we maybe just added something
+                self.process_input_history(ui);
+            });
+        });
+    }
+}
+
+use egui_aesthetix;
+impl App for NusGui {
+    fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
+        if self.latch_once {
+            self.latch_once = false;
+            // ??
+        }
+
+        if self.do_quit {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+
+        TopBottomPanel::top("top_panel").show(ctx, |ui| {
+            self.draw_top_panel(ctx, ui);
+        });
+
+        CentralPanel::default().show(ctx, |ui| {
+            // WARN: this call to process_inbox has to be *somewhere* but...
+            // the current function calls in process_inbox require ui: &Ui, but ....
+            // only because ui: &Ui has a reference to the ctx: &Context
+            // TODO: use different function calls and move call of process_inbox to outside the
+            // CentralPanel clause in this function; it would be cleaner at the root of this update
+            // function
+
+            // NOTE: update data from received messages in inbox
+            self.process_inbox(ctx, ui);
+
+            // draw central panel
+            self.draw_central_panel(ctx, ui);
+        });
+    }
+}
+
+pub fn main() -> eframe::Result<()> {
+    // NOTE: logging/tracing config first
+    let filter = filter::Targets::new()
+        // Enable the `INFO` level for anything in `my_crate`
+        .with_default(LevelFilter::INFO)
+        .with_target("hope", LevelFilter::INFO)
+        .with_target("bluest", LevelFilter::WARN);
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer())
+        .with(filter)
+        .init();
+
+    let options = eframe::NativeOptions::default();
+    eframe::run_native(
+        "NUS GUI",
+        options,
+        Box::new(|cc| {
+            Ok(Box::new(
+                //
+                NusGui::new(&cc.egui_ctx.clone(), cc), //
+            ))
+        }), //
     )
+}
+
+fn scan_obj_to_scan_row(scan_obj: &AdvertisingDevice) -> ScanRow {
+    ScanRow {
+        bt_id: Some(scan_obj.device.id()),
+        name: scan_obj.device.name().unwrap_or("n/a".into()),
+        rssi: scan_obj.rssi.unwrap_or(-200_i16),
+    }
 }
