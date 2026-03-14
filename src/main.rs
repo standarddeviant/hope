@@ -208,21 +208,6 @@ impl NusGui {
             ui.add_space(10.);
             self.colorix.themes_dropdown(ui, None, false);
 
-            let quit_button = Button::new(
-                // Use RichText to customize the text color
-                egui::RichText::new("QUIT").color(Color32::WHITE), // Set the text color to white
-            )
-            // Use the fill method to set the button's background color to red
-            .fill(Color32::RED); //
-            //
-            if ui.add(quit_button).clicked() {
-                let _ = self.cmd_tx.send(DoDisconnect);
-                let _ = self.cmd_tx.send(DoQuit);
-                // self.bt_state = AmQuitting;
-                // FIXME: clean up disconnect+quit logic to ensure actual BT disconnect
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
-
             let discon_button = Button::new(
                 // Use RichText to customize the text color
                 egui::RichText::new("Disconnect").color(Color32::BLACK), // Set the text color to white
@@ -235,6 +220,23 @@ impl NusGui {
                     let _ = self.cmd_tx.send(DoDisconnect);
                 }
             }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let quit_button = Button::new(
+                    // Use RichText to customize the text color
+                    egui::RichText::new("QUIT").color(Color32::WHITE), // Set the text color to white
+                )
+                // Use the fill method to set the button's background color to red
+                .fill(Color32::RED); //
+                //
+                if ui.add(quit_button).clicked() {
+                    let _ = self.cmd_tx.send(DoDisconnect);
+                    let _ = self.cmd_tx.send(DoQuit);
+                    // self.bt_state = AmQuitting;
+                    // FIXME: clean up disconnect+quit logic to ensure actual BT disconnect
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            });
         });
     }
 
@@ -364,6 +366,8 @@ impl NusGui {
                 egui::TextEdit::multiline(&mut self.nus_tx_multi_string)
                     .font(egui::TextStyle::Monospace) // Monospace for terminal look
                     .desired_width(f32::INFINITY)
+                    // .min_size(Vec2::new(ui.available_width(), ui.available_height()))
+                    .min_size(ui.available_size())
                     .interactive(false)
                     .frame(true)
                     .show(ui);
@@ -374,6 +378,7 @@ impl NusGui {
                 ui.label("Send: ");
                 let mut nus_rx_line_edit =
                     egui::TextEdit::singleline(&mut self.nus_rx_single_string)
+                        .desired_width(f32::INFINITY)
                         .min_size(Vec2::new(200.0, 25.0)) // Set min width/height
                         .show(ui);
                 // if self.nus_rx_snap_cursor {
