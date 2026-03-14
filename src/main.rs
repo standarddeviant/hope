@@ -245,7 +245,6 @@ impl NusGui {
                 .fill(Color32::RED); //
                 //
                 if ui.add(quit_button).clicked() {
-                    let _ = self.cmd_tx.send(DoDisconnect);
                     let _ = self.cmd_tx.send(DoQuit);
                     // self.bt_state = AmQuitting;
                     // FIXME: clean up disconnect+quit logic to ensure actual BT disconnect

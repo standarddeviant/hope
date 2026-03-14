@@ -289,7 +289,8 @@ pub fn spawn_btnus_thread(
                             Ok(ok_do_quit) => {
                                 info!("succesful disconnect");
                                 if ok_do_quit {
-                                    // WARN: this breaks the forever loop
+                                    do_quit = true;
+                                    // WARN: this *should* break the forever loop
                                     break;
                                 }
                             }
@@ -302,8 +303,6 @@ pub fn spawn_btnus_thread(
                         // nothing to do?
                     }
                 }
-
-                // let nus_setup_loop_result = bt_nus_setup_and_loop(, &mut cmd, egui_inbox)
             } // outer forever loop
             let _ = resp.send(AmQuitted); // FIXME: check result
             info!("sent AmQuitted");
