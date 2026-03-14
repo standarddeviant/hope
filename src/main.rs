@@ -41,10 +41,11 @@ struct NusGui {
     cmd_tx: Sender<ThreadedNusMsg>,
     inbox: UiInbox<ThreadedNusMsg>, // = UiInbox::new();
     // resp_tx: UiInboxSender<ThreadedNusMsg>,
-    bt_state: ThreadedNusMsg,                       // = AmNotReady;
-    scan_vec: Vec<AdvertisingDevice>,               // = vec![];
-    scan_map: HashMap<DeviceId, AdvertisingDevice>, // = HashMap::default();
-    // scan_columns: Vec<ScanColumns>,                 //::iter().collect();
+    bt_state: ThreadedNusMsg,                        // = AmNotReady;
+    bt_handle: std::thread::JoinHandle<Option<u32>>, //
+    scan_vec: Vec<AdvertisingDevice>,                // = vec![];
+    scan_map: HashMap<DeviceId, AdvertisingDevice>,  // = HashMap::default();
+    // scan_columns: Vec<ScanColumns>,              //::iter().collect();
 
     // Auto reload after each 10k table row add or modification
     table: SelectableTable<ScanRow, ScanColumns, ScanConfig>,
@@ -56,6 +57,7 @@ struct NusGui {
     nus_rx_history_index: Option<usize>,
     nus_rx_snap_cursor: bool,
 
+    do_quit: bool,
     latch_once: bool,
     colorix: Colorix,
 }
@@ -63,6 +65,10 @@ struct NusGui {
 const PEACH32: Color32 = Color32::from_rgb(0xFF, 0xD3, 0xAC);
 
 impl NusGui {
+    // pub fn wait_on_bt_nus_thread(&mut self) {
+    //     std::thread::jo
+    //     //
+    // }
     pub fn new(ctx: &Context, cc: &CreationContext) -> Self {
         cc.egui_ctx
             .options_mut(|a| a.theme_preference = ThemePreference::System);
@@ -87,7 +93,7 @@ impl NusGui {
         let resp_tx = inbox.sender();
 
         // NOTE: spawn btnus thread with async runtime
-        spawn_btnus_thread(cmd_rx, resp_tx);
+        let bt_handle: std::thread::JoinHandle<Option<u32>> = spawn_btnus_thread(cmd_rx, resp_tx);
 
         let nus_tx_multi_string: String = "".into();
         let nus_rx_single_string: String = "".into();
@@ -101,6 +107,7 @@ impl NusGui {
             cmd_tx,
             inbox,
             bt_state,
+            bt_handle,
             scan_vec,
             scan_map,
             // scan_columns,
@@ -111,6 +118,7 @@ impl NusGui {
             nus_rx_history_index,
             nus_rx_snap_cursor,
             //
+            do_quit: false,
             latch_once: true,
             colorix,
         }
@@ -150,16 +158,19 @@ impl NusGui {
         });
     }
 
-    fn process_inbox(&mut self, ui: &mut Ui) {
+    fn process_inbox(&mut self, _ctx: &Context, ui: &mut Ui) {
         // loop through all received responses
         for response in self.inbox.read(ui) {
             let m = response.clone();
             // let m = response;
             match m {
+                AmQuitted => {
+                    self.do_quit = true;
+                }
                 AmReadyIdle(adapter_desc) => {
                     self.bt_state = AmReadyIdle(adapter_desc.clone());
                 }
-                AmNotReady | AmScanning | AmConnecting | AmConnected | AmDone => {
+                AmNotReady | AmScanning | AmConnecting | AmConnected => {
                     self.bt_state = m;
                 }
                 DataTx(nus_tx_bytes) => {
@@ -205,7 +216,7 @@ impl NusGui {
         }
     } // end process_inbox
 
-    fn draw_top_panel(&mut self, ctx: &Context, ui: &mut Ui) {
+    fn draw_top_panel(&mut self, _ctx: &Context, ui: &mut Ui) {
         ui.horizontal(|ui| {
             // egui::widgets::global_theme_preference_buttons(ui);
             self.colorix.light_dark_toggle_button(ui, 30.0);
@@ -238,13 +249,13 @@ impl NusGui {
                     let _ = self.cmd_tx.send(DoQuit);
                     // self.bt_state = AmQuitting;
                     // FIXME: clean up disconnect+quit logic to ensure actual BT disconnect
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    // ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             });
         });
     }
 
-    fn draw_central_panel(&mut self, ui: &mut Ui) {
+    fn draw_central_panel(&mut self, ctx: &Context, ui: &mut Ui) {
         // make 'actionable copy' of bt_state so called functions can alter self.bt_state
         // let bt_state = self.bt_state.clone();
         match self.bt_state.clone() {
@@ -270,7 +281,6 @@ impl NusGui {
             AmConnected => {
                 self.draw_central_panel_connected(ui);
             }
-            AmDone => todo!(),
             unhandled => {
                 ui.label(format!(
                     "Well, this is awkward, I didn't expect to be in a state of {:?}",
@@ -362,6 +372,7 @@ impl NusGui {
         // TODO: add multiline text edit via ui.enabled(false) w/ diff. APIs
         //       reason: adding .interactive(false) to multiline TextEdit makes the text
         //       unselectable and uncopy-able
+        let text_color = ui.visuals().text_color();
         egui::ScrollArea::both()
             .auto_shrink(false)
             .max_height(ui.available_height() - 30.0)
@@ -376,7 +387,8 @@ impl NusGui {
                         .min_size(ui.available_size())
                         .interactive(true)
                         .frame(true)
-                        .text_color(egui::Color32::from_rgb(0xDD, 0xDD, 0xDD)), // .show(ui);
+                        .text_color(text_color), // .text_color(egui::Color32::from_rgb(0xDD, 0xDD, 0xDD)),
+                                                 // .show(ui);
                 );
             });
 
@@ -442,6 +454,11 @@ impl App for NusGui {
             // ??
         }
 
+        if self.do_quit {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+
         TopBottomPanel::top("top_panel").show(ctx, |ui| {
             self.draw_top_panel(ctx, ui);
         });
@@ -455,10 +472,10 @@ impl App for NusGui {
             // function
 
             // NOTE: update data from received messages in inbox
-            self.process_inbox(ui);
+            self.process_inbox(ctx, ui);
 
             // draw central panel
-            self.draw_central_panel(ui);
+            self.draw_central_panel(ctx, ui);
         });
     }
 }

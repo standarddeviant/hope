@@ -43,7 +43,8 @@ pub enum ThreadedNusMsg {
     AmScanning,
     AmConnecting,
     AmConnected,
-    AmDone,
+    AmQuitted,
+    // AmDone,
 }
 use ThreadedNusMsg::*;
 
@@ -52,7 +53,8 @@ async fn bt_nus_setup_and_loop(
     bt_id: &DeviceId,
     cmd: &flume::Receiver<ThreadedNusMsg>,
     resp: &egui_inbox::UiInboxSender<ThreadedNusMsg>,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<bool, Box<dyn Error>> {
+    let mut do_quit = false;
     // make device connection
     let mut device = adapter.open_device(&bt_id).await?;
     adapter.connect_device(&device).await?;
@@ -86,7 +88,7 @@ async fn bt_nus_setup_and_loop(
 
     let mut do_disconnect = false;
     loop {
-        if do_disconnect {
+        if do_quit | do_disconnect {
             break;
         }
 
@@ -96,6 +98,11 @@ async fn bt_nus_setup_and_loop(
         // 1. check input if we should Disconnect -OR- relay bytes to device via nus_rx_chr
         loop {
             match cmd.recv_timeout(Duration::from_millis(0)) {
+                Ok(DoQuit) => {
+                    do_quit = true;
+                    info!("recv DoQuit");
+                    break;
+                }
                 Ok(DoDisconnect) => {
                     info!("recv'd DoDisconnect");
                     do_disconnect = true;
@@ -149,19 +156,23 @@ async fn bt_nus_setup_and_loop(
         }
     }
 
-    Ok(())
+    Ok(do_quit)
 }
 
 pub fn spawn_btnus_thread(
     cmd: flume::Receiver<ThreadedNusMsg>,
     resp: egui_inbox::UiInboxSender<ThreadedNusMsg>,
-) {
+) -> std::thread::JoinHandle<Option<u32>> {
     std::thread::spawn(move || {
         let rt = Runtime::new().expect("Failed to create runtime");
         rt.block_on(async {
             // continually loop through....
             // idle -> scanning -> connecting -> connected -> (back to idle)
+            let mut do_quit = false;
             loop {
+                if do_quit {
+                    break;
+                }
                 // NOTE: state 1a-of-4: idle (not ready)
                 let mut connect_bt_id: Option<DeviceId> = None;
                 let mut scan_map: HashMap<DeviceId, Device> = HashMap::new();
@@ -188,6 +199,10 @@ pub fn spawn_btnus_thread(
                 info!("btnus waiting for {:?}", DoScanStart("".into()));
                 loop {
                     match cmd.recv_async().await {
+                        Ok(DoQuit) => {
+                            do_quit = true;
+                            break;
+                        }
                         Ok(DoScanStart(_opts)) => {
                             connect_bt_id = None;
                             break;
@@ -234,6 +249,10 @@ pub fn spawn_btnus_thread(
                         // TODO: check if the sync method recv_timeout works just fine in here... it
                         // should...
                         match cmd.recv_timeout(Duration::from_millis(0)) {
+                            Ok(DoQuit) => {
+                                do_quit = true;
+                                break;
+                            }
                             Ok(DoScanStop) => {
                                 info!("scan: recv'd DoScanStop, stopping scan");
                                 break;
@@ -259,7 +278,7 @@ pub fn spawn_btnus_thread(
                         resp.send(DataScanResult(vec![discovered_device.clone()]))
                             .ok();
                     }
-                    info!("scan stopped")
+                    info!("scan stopped");
                 } // end start-scan, i.e. if connect_bt_id.is_none()
 
                 // NOTE: state 3-of-4: connecting
@@ -267,8 +286,12 @@ pub fn spawn_btnus_thread(
                     Some(bt_id) => {
                         // NOTE: state 4-of-4: connected (handled inside async fn)
                         match bt_nus_setup_and_loop(&adapter, &bt_id, &cmd, &resp).await {
-                            Ok(_good) => {
-                                info!("succesful disconnect")
+                            Ok(ok_do_quit) => {
+                                info!("succesful disconnect");
+                                if ok_do_quit {
+                                    // WARN: this breaks the forever loop
+                                    break;
+                                }
                             }
                             Err(e) => {
                                 error!("bad disconnect : {e}");
@@ -282,6 +305,9 @@ pub fn spawn_btnus_thread(
 
                 // let nus_setup_loop_result = bt_nus_setup_and_loop(, &mut cmd, egui_inbox)
             } // outer forever loop
-        });
-    });
-}
+            let _ = resp.send(AmQuitted); // FIXME: check result
+            info!("sent AmQuitted");
+        }); // end rt.block_on ...
+        None // return None to satisfy JoinHandle<Option<u32>>
+    }) // returning spawned thread handle;
+} // end fn spawn_btnus_thread
