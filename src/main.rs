@@ -5,6 +5,8 @@ use bluest::AdvertisingDevice;
 use bluest::DeviceId;
 use eframe::egui::{Button, TopBottomPanel, Vec2};
 use eframe::{App, CreationContext, Frame, egui, epaint::Color32};
+use egui_colors::Colorix;
+// use egui_colors::{Colorix; ThemeColor};
 use egui::text::{CCursor, CCursorRange};
 use egui::{Align, CentralPanel, Context, Layout, ThemePreference, Ui};
 use egui_extras::Column;
@@ -52,10 +54,15 @@ struct NusGui {
     nus_rx_history: Vec<String>,
     nus_rx_history_index: Option<usize>,
     nus_rx_snap_cursor: bool,
+
+    latch_once: bool,
+    colorix: Colorix,
 }
 
+const PEACH32: Color32 = Color32::from_rgb(0xFF, 0xD3, 0xAC);
+
 impl NusGui {
-    pub fn new(cc: &CreationContext) -> Self {
+    pub fn new(ctx: &Context, cc: &CreationContext) -> Self {
         cc.egui_ctx
             .options_mut(|a| a.theme_preference = ThemePreference::System);
 
@@ -87,6 +94,8 @@ impl NusGui {
         let nus_rx_history_index = None;
         let nus_rx_snap_cursor = false;
 
+        let colorix = Colorix::global(ctx, egui_colors::utils::EGUI_THEME);
+
         Self {
             cmd_tx,
             inbox,
@@ -100,6 +109,9 @@ impl NusGui {
             nus_rx_history,
             nus_rx_history_index,
             nus_rx_snap_cursor,
+            //
+            latch_once: true,
+            colorix,
         }
     }
 
@@ -191,7 +203,10 @@ impl NusGui {
 
     fn draw_top_panel(&mut self, ctx: &Context, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            egui::widgets::global_theme_preference_buttons(ui);
+            // egui::widgets::global_theme_preference_buttons(ui);
+            self.colorix.light_dark_toggle_button(ui, 30.0);
+            ui.add_space(10.);
+            self.colorix.themes_dropdown(ui, None, false);
 
             let quit_button = Button::new(
                 // Use RichText to customize the text color
@@ -206,6 +221,19 @@ impl NusGui {
                 // self.bt_state = AmQuitting;
                 // FIXME: clean up disconnect+quit logic to ensure actual BT disconnect
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+
+            let discon_button = Button::new(
+                // Use RichText to customize the text color
+                egui::RichText::new("Disconnect").color(Color32::BLACK), // Set the text color to white
+            )
+            // Use the fill method to set the button's background color to red
+            .fill(PEACH32); //
+
+            if AmConnected == self.bt_state {
+                if ui.add(discon_button).clicked() {
+                    let _ = self.cmd_tx.send(DoDisconnect);
+                }
             }
         });
     }
@@ -325,10 +353,6 @@ impl NusGui {
     } // end draw_central_panel
 
     fn draw_central_panel_connected(&mut self, ui: &mut Ui) {
-        if ui.button("Disconnect").clicked() {
-            let _ = self.cmd_tx.send(DoDisconnect);
-        }
-
         // TODO: add multiline text edit via ui.enabled(false) w/ diff. APIs
         //       reason: adding .interactive(false) to multiline TextEdit makes the text
         //       unselectable and uncopy-able
@@ -398,8 +422,14 @@ impl NusGui {
     }
 }
 
+use egui_aesthetix;
 impl App for NusGui {
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
+        if self.latch_once {
+            self.latch_once = false;
+            // ??
+        }
+
         TopBottomPanel::top("top_panel").show(ctx, |ui| {
             self.draw_top_panel(ctx, ui);
         });
@@ -437,7 +467,12 @@ pub fn main() -> eframe::Result<()> {
     eframe::run_native(
         "NUS GUI",
         options,
-        Box::new(|cc| Ok(Box::new(NusGui::new(cc)))),
+        Box::new(|cc| {
+            Ok(Box::new(
+                //
+                NusGui::new(&cc.egui_ctx.clone(), cc), //
+            ))
+        }), //
     )
 }
 
