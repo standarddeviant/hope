@@ -391,11 +391,12 @@ impl NusGui {
                 );
             });
 
-        ui.with_layout(Layout::left_to_right(Align::BOTTOM), |ui| {
+        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
             ui.horizontal(|ui| {
-                ui.label("Send: ");
+                ui.label(egui::RichText::new("Send: ").monospace());
                 let mut nus_rx_line_edit =
                     egui::TextEdit::singleline(&mut self.nus_rx_single_string)
+                        .font(egui::TextStyle::Monospace) // Monospace for terminal look
                         .desired_width(f32::INFINITY)
                         .min_size(Vec2::new(200.0, 25.0)) // Set min width/height
                         .show(ui);
