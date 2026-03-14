@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use bluest::AdvertisingDevice;
 use bluest::DeviceId;
 use eframe::egui::{Button, TopBottomPanel, Vec2};
+use eframe::epaint::color;
 use eframe::{App, CreationContext, Frame, egui, epaint::Color32};
 use egui_colors::Colorix;
 // use egui_colors::{Colorix; ThemeColor};
@@ -162,9 +163,12 @@ impl NusGui {
                     self.bt_state = m;
                 }
                 DataTx(nus_tx_bytes) => {
-                    // warn!("Unhandled NUS Tx Bytes = {nus_tx_bytes:?}");
+                    // TODO: implement a more robust strategy for handling utf8 errors...
+                    //       using lossy function is okay for now
                     let tmp_str = String::from_utf8_lossy(&nus_tx_bytes);
                     self.nus_tx_multi_string.push_str(&tmp_str);
+
+                    // TODO: add incremental file logging here
                 }
                 DataScanResult(recvd_scans) => {
                     // scan_vec.extend(new_scans);
@@ -363,14 +367,17 @@ impl NusGui {
             .max_height(ui.available_height() - 30.0)
             .stick_to_bottom(true)
             .show(ui, |ui| {
-                egui::TextEdit::multiline(&mut self.nus_tx_multi_string)
-                    .font(egui::TextStyle::Monospace) // Monospace for terminal look
-                    .desired_width(f32::INFINITY)
-                    // .min_size(Vec2::new(ui.available_width(), ui.available_height()))
-                    .min_size(ui.available_size())
-                    .interactive(false)
-                    .frame(true)
-                    .show(ui);
+                ui.add_enabled(
+                    true,
+                    egui::TextEdit::multiline(&mut self.nus_tx_multi_string.to_owned())
+                        .font(egui::TextStyle::Monospace) // Monospace for terminal look
+                        .desired_width(f32::INFINITY)
+                        // .min_size(Vec2::new(ui.available_width(), ui.available_height()))
+                        .min_size(ui.available_size())
+                        .interactive(true)
+                        .frame(true)
+                        .text_color(egui::Color32::from_rgb(0xDD, 0xDD, 0xDD)), // .show(ui);
+                );
             });
 
         ui.with_layout(Layout::left_to_right(Align::BOTTOM), |ui| {
